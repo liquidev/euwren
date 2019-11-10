@@ -72,6 +72,11 @@ wren.foreign("nim"):
   Nim:
     # bind the proc 'hello'
     hello
+  module """
+    class Nim {
+      foreign static hello()
+    }
+  """
 ```
 ```d
 import "nim" for Nim
