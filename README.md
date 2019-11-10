@@ -68,7 +68,9 @@ proc hello() =
   echo "Hello from Nim!"
 
 wren.foreign("nim"):
+  # create a namespace 'Nim' that will hold our proc
   Nim:
+    # bind the proc 'hello'
     hello
 ```
 ```d
