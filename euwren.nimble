@@ -4,7 +4,7 @@
 
 version       = "0.1.0"
 author        = "liquid600pgm"
-description   = "High-level wrapper for Wren"
+description   = "High-level Wren wrapper"
 license       = "MIT"
 srcDir        = "src"
 
