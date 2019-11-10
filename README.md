@@ -4,8 +4,8 @@
 > considered "the king of birds" in Europe.
 
 euwren (pronounced _oyren_, like _euro_ in German) is a high-level
-[Wren](https://github.com/wren-lang/wren) wrapper for Nim. Wren is small, fast,
-embedded scripting language.
+[Wren](https://github.com/wren-lang/wren) wrapper for Nim. Wren is a small,
+fast, embedded scripting language.
 
 The main point of euwren is to create a very user-friendly, high-level wrapper:
 "The king of Wren wrappers". It leverages Nim's powerful macro system to make
@@ -83,7 +83,7 @@ wren.foreign("math"):
     }
   """
 ```
-```dart
+```d
 import "math" for Math
 System.print(Math.add(2, 2)) // Output: 4
 ```
