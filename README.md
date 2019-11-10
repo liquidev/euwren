@@ -164,6 +164,7 @@ type
 wren.foreign("enums"):
   # enums are bound by not specifying a body
   Fruit
+  # the conventional prefix can be stripped by using ``-``
   MenuOpt - opt
   # enums can also be aliased
   Lang = ProgLanguage - lang
