@@ -13,6 +13,9 @@ the API as simple as listing all the things you need in Wren. While it may not
 be the fastest of wrappers, it's not the primary goal. It's the end user
 experience that really counts.
 
+euwren is still WIP, so not all features are implemented. Those that are
+unavailable are marked with `(NYI)`.
+
 ## Features
 
 - Syntactically simple
@@ -49,6 +52,7 @@ var wren = newWren()
 After that, running code is as simple as:
 ```nim
 # run() runs code in the 'main' module
+# it's an alias to wren.module("main", <code>)
 wren.run("""
   System.print("Hello from Wren!")
 """)
@@ -56,9 +60,8 @@ wren.run("""
 
 ### Binding procs
 
-Wren is strictly class-based, but Nim is not—that means that any procs on the
-Wren side must be nested inside a class. Fortunately, no extra objects need to
-be declared:
+Wren is strictly class-based, but Nim is not—that means that any procs passed to
+Wren must be nested inside a class. Fortunately, that's pretty simple.
 
 ```nim
 proc add(a, b: int): int = a + b
@@ -67,13 +70,13 @@ proc subtract(a, b: int): int = a - b
 
 # foreign() accepts the name of the module we want to bind
 wren.foreign("math"):
-  # we create a namespace, since we don't store any data
+  # we create a namespace 'Math' for our procs
   Math:
     # procs can be overloaded by arity, but not by parameter type
     # (this is not enforced, so be careful!)
     add(int, int)
     add(int, int, int)
-    # procs can be aliased on the Wren side
+    # procs can be aliased on the Wren side (NYI)
     subtract -> sub
   # we need to provide the module's actual source code
   module """
@@ -110,10 +113,11 @@ proc more(foo: var Foo) =
 proc count(foo: Foo) = foo.count
 
 wren.foreign("foo"):
-  # objects can be aliased, just like procs
+  # objects can be aliased, just like procs (NYI)
   Foo -> Bar:
     # an object must have exactly one constructor or initializer, and it must
     # be the first thing that's bound
+    # adding one changes the namespace to a foreign object
     # a constructor creates an object from scratch, an initializer initializes
     # an object in place
     [new] initFoo
@@ -125,7 +129,7 @@ wren.foreign("foo"):
 
       foreign more()
       foreign count
-      foreign name
+      foreign name // bound implicitly (NYI)
     }
   """
 ```
@@ -137,7 +141,7 @@ foo.more()
 System.print(foo.count)
 ```
 
-### Binding enums
+### Binding enums (NYI)
 
 Binding enums is very easy, since all glue code is generated for you.
 In fact, an enum is nothing more than a class with a bunch of static getters.
