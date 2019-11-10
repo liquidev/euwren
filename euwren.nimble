@@ -13,4 +13,4 @@ srcDir        = "src"
 #--
 
 requires "nim >= 1.0.0"
-requires "nimterop #head"
+requires "nimterop >= 0.3.3"
