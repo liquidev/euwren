@@ -16,7 +16,7 @@ experience that really counts.
 ## Features
 
 - Syntactically simple
-- Supports proc, object, and enum binding
+- Supports proc, object, and enum (NYI) binding
 - Does type checks for procedures
 - Supports operator overloading
 
@@ -125,10 +125,11 @@ wren.foreign("foo"):
 
       foreign more()
       foreign count
+      foreign name
     }
   """
 ```
-```dart
+```d
 import "foo" for Bar
 
 var foo = Bar.new()
@@ -164,8 +165,8 @@ wren.foreign("enums"):
   Lang = ProgLanguage - lang
   # if a foreign() block contains an enum, the module is prepended with the
   # given enums. this also means we don't need to provide a module() block here
-
-```dart
+```
+```d
 class Fruit {
   static fruitApple { 0 }
   static fruitBanana { 1 }
@@ -182,7 +183,7 @@ class Lang {
   static C { 2 }
 }
 ```
-```dart
+```d
 import "enums" for Fruit, MenuOpt, Lang
 
 System.print(Fruit.fruitGrape) // 2
