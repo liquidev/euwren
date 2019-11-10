@@ -64,6 +64,19 @@ Wren is strictly class-based, but Nim is not—that means that any procs passed 
 Wren must be nested inside a class. Fortunately, that's pretty simple.
 
 ```nim
+proc hello() =
+  echo "Hello from Nim!"
+
+wren.foreign("nim"):
+  Nim:
+    hello
+```
+```d
+import "nim" for Nim
+Nim.hello() // Output: Hello from Nim!
+```
+Here's a more advanced example:
+```nim
 proc add(a, b: int): int = a + b
 proc add(a, b, c: int): int = a.add(b).add(c)
 proc subtract(a, b: int): int = a - b
