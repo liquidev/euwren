@@ -182,7 +182,7 @@ wren.foreign("enums"):
   # the conventional prefix can be stripped by using ``-``
   MenuOpt - opt
   # enums can also be aliased
-  ProgLangauge - lang -> Lang
+  ProgLanguage - lang -> Lang
   # if a foreign() block contains an enum, the module is prepended with the
   # given enums. this also means we don't need to provide a module() block here
 ```
