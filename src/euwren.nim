@@ -14,17 +14,13 @@ type
   ClassSign = tuple[module, name: string]
 
   WrenType* = enum
-    wtBool = "Bool"
-    wtNum = "Num"
-    wtForeign = "Foreign"
-    wtList = "List"
-    wtNull = "Null"
-    wtString = "String"
-    wtUnknown = "Wren type"
-  WrenTypeData* = object
-    case ty*: WrenType
-    of wtForeign: foreignId*: uint16
-    else: discard
+    wtBool = "bool"
+    wtNum = "number"
+    wtForeign = "foreign"
+    wtList = "list"
+    wtNull = "null"
+    wtString = "string"
+    wtUnknown = "<wren type>"
 
   Wren* = ref object
     ## A Wren virtual machine used for executing code.
@@ -47,13 +43,6 @@ type
     of weCompile: discard
     of weRuntime:
       stackTrace*: seq[tuple[module: string, line: int, message: string]]
-
-const
-  WrenBool* = WrenTypeData(ty: wtBool)
-  WrenNum* = WrenTypeData(ty: wtNum)
-  WrenList* = WrenTypeData(ty: wtList)
-  WrenNull* = WrenTypeData(ty: wtNull)
-  WrenString* = WrenTypeData(ty: wtString)
 
 proc `$`*(vm: Wren): string =
   result = "- Wren instance\n" &
@@ -157,6 +146,12 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
   else:
     {.error: "unsupported type for slot retrieval".}
 
+proc getSlotType*(vm: RawVM, slot: int): WrenType =
+  result = wrenGetSlotType(vm, slot.cint).WrenType
+
+proc getSlotForeignId*(vm: RawVM, slot: int): uint16 =
+  result = cast[ptr uint16](wrenGetSlotForeign(vm, slot.cint))[]
+
 proc newForeign*(vm: RawVM, slot: int, size: Natural, classSlot = 0): pointer =
   result = wrenSetSlotNewForeign(vm, slot.cint, classSlot.cint, size.cuint)
 
@@ -179,47 +174,17 @@ var
     ## Maps type hashes to unique integer IDs
   typeNames {.compileTime.}: Table[uint16, string]
     ## Maps integer IDs to type names
-  # typeNameCache {.compileTime.}: Table[uint16, string]
-  #   ## Compile-time cache for
+  parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
+
+proc checkParent*(base, compare: uint16): bool =
+  ## Check if the ``compare`` type is one of ``base``'s parent types.
+  ## Used internally for type checking with inheritance.
+  result = compare in parentTypeIds[base]
 
 proc addTypeName*(id: uint16, name: string) =
   ## This is an implementation detail used internally by the wrapper.
   ## You should not use this in your code.
   typeNames[id] = name
-
-proc getSlotTypeStr(vm: RawVM, slot: int): string =
-  discard
-
-proc `$`(tydata: WrenTypeData): string =
-  if tydata.ty != wtForeign:
-    result = $tydata.ty
-  else:
-    result = typeNames[tydata.foreignId]
-
-proc checkTypes*(vm: RawVM, types: varargs[WrenTypeData]): bool =
-  for i in 0..<types.len:
-    let t = types[i]
-    if t.ty != wtForeign:
-      let slotType = wrenGetSlotType(vm, cint(i + 1)).WrenType
-      if t.ty != slotType:
-        let slotTypeName = vm.getSlotTypeStr(i + 1)
-        vm.abortFiber("type mismatch: got " & slotTypeName & ", " &
-                      "but expected " & $t)
-        return false
-    else:
-      let slotTy = wrenGetSlotType(vm, cint(i + 1)).WrenType
-      if slotTy != wtForeign:
-        let
-          foreign = wrenGetSlotForeign(vm, cint(i + 1))
-          typeId = cast[ptr uint16](foreign)[]
-        if t.foreignId != typeId:
-          let
-            slotTypeName = vm.getSlotTypeStr(i + 1)
-            typeName = typeNames[typeId]
-          vm.abortFiber("type mismatch: got " & slotTypeName & ", " &
-                        "but expected " & typeName)
-          return false
-  result = true
 
 proc addProc*(vm: Wren, module, class, signature: string, isStatic: bool,
               impl: WrenForeignMethodFn) =
@@ -289,12 +254,28 @@ proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
       return overload
   error("couldn't find overload for given parameter types")
 
+proc getParent(typeSym: NimNode): NimNode =
+  var impl = typeSym.getImpl[2]
+  impl.expectKind({nnkRefTy, nnkObjectTy})
+  while impl.kind == nnkRefTy:
+    impl = impl[0]
+  impl.expectKind(nnkObjectTy)
+  if impl[1].kind != nnkEmpty:
+    result = impl[1][0]
+
 proc getTypeId(typeSym: NimNode): uint16 =
   let hash = typeSym.signatureHash
   if hash notin typeIds:
-    let id = typeIds.len.uint16
+    let
+      id = typeIds.len.uint16
+      parent = typeSym.getParent
     typeIds[hash] = id
     typeNames[id] = typeSym.repr
+    if parent == nil:
+      parentTypeIds[id] = {}
+    else:
+      let parentId = getTypeId(parent)
+      parentTypeIds[id] = parentTypeIds[parentId] + {parentId}
   result = typeIds[hash]
 
 proc getSlotGetters(params: seq[NimNode]): seq[NimNode] =
@@ -303,17 +284,51 @@ proc getSlotGetters(params: seq[NimNode]): seq[NimNode] =
                          ident"vm", newLit(i + 1))
     result.add(getter)
 
-proc getWrenTypes(types: seq[NimNode]): seq[NimNode] =
-  for ty in types:
-    if ty.typeKind == ntyBool: result.add(ident"WrenBool")
-    elif ty.typeKind in {ntyInt..ntyUint64}: result.add(ident"WrenNum")
-    elif ty.typeKind == ntyString: result.add(ident"WrenString")
-    elif ty.typeKind in {ntyObject, ntyRef}:
-      result.add(newTree(nnkObjConstr, ident"WrenTypeData",
-                         newColonExpr(ident"ty", ident"wtForeign"),
-                         newColonExpr(ident"foreignId", newLit(getTypeId(ty)))))
-    else:
-      error("[euwren] unsupported proc param type", ty)
+proc genTypeCheck*(types: varargs[NimNode]): NimNode =
+  ## Generate a type check condition. This looks at all the params and assembles
+  ## a big chain of conditions which check the type.
+  ## This is a much better way of checking types compared to the 0.1.0
+  ## ``checkTypes``, which simply looped through an array of ``WrenTypeData``
+  ## structs and compared them. The current, macro-based version, has much lower
+  ## runtime overhead, because it's just a simple chain of confitions.
+
+  # type kind sets
+  const
+    Nums = {ntyInt..ntyUint64}
+    Foreign = {ntyObject, ntyRef}
+
+  # there isn't any work to be done if the proc doesn't accept params
+  if types.len == 0: return newLit(true)
+
+  # generate a list of checks
+  var checks: seq[NimNode]
+  for i, ty in types:
+    let
+      wrenType =
+        if ty.typeKind == ntyBool: wtBool
+        elif ty.typeKind in Nums: wtNum
+        elif ty.typeKind == ntyString: wtString
+        elif ty.typeKind in Foreign: wtForeign
+        else:
+          error("unsupported type kind", ty)
+          wtUnknown
+      comparison = newTree(nnkInfix, ident"==",
+                           newCall("getSlotType", ident"vm", newLit(i + 1)),
+                           newLit(wrenType))
+    checks.add(comparison)
+    if wrenType == wtForeign:
+      let
+        typeId = getTypeId(ty)
+        typeIdLit = newLit(typeId)
+        slotId = newCall("getSlotForeignId", ident"vm", newLit(i + 1))
+        idCheck = newTree(nnkInfix, ident"==", slotId, typeIdLit)
+        parentCheck = newCall(ident"checkParent", typeIdLit, slotId)
+      checks.add(newPar(newTree(nnkInfix, ident"or", idCheck, parentCheck)))
+
+  # fold the list of checks to an nnkInfix node
+  result = checks[^1]
+  for i in countdown(checks.len - 2, 0):
+    result = newTree(nnkInfix, ident"and", checks[i], result)
 
 proc genProcGlue(theProc: NimNode, isGetter: bool): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
@@ -337,9 +352,7 @@ proc genProcGlue(theProc: NimNode, isGetter: bool): NimNode =
         newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
                 ident"vm", newLit(0), call)
   # generate type check
-  var typeCheckParams = @[ident"vm"]
-  typeCheckParams.add(getWrenTypes(procParams))
-  let typeCheck = newCall(ident"checkTypes", typeCheckParams)
+  let typeCheck = genTypeCheck(procParams)
   body.add(newIfStmt((cond: typeCheck, body: callWithReturn)))
   result.body = body
 
@@ -499,7 +512,6 @@ proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
   ## - a destructor is provided, to execute it
   ## - the object is a ref object, to call GC_unref and free its memory
   ## Otherwise, this proc returns a nil literal.
-  echo class.getImpl.treeRepr
   if procSym.kind != nnkNilLit or class.isRef:
     # create the destructor proc
     result = newProc(params = [newEmptyNode(),
