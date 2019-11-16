@@ -473,14 +473,12 @@ proc genInitGlue(vm, class, procSym: NimNode,
                                  newLit(getTypeId(class)))
   body.add([rawMemVar, dataVar, typeIdAssign])
   # generate the type check
-  var typeCheckParams = @[ident"vm"]
   let initParams =
     # the params for object construction, excluding the first param in case
     # of initializer
     if kind == ipInit: procParams[1..^1]
     else: procParams
-  typeCheckParams.add(getWrenTypes(initParams))
-  let typeCheck = newCall(ident"checkTypes", typeCheckParams)
+  let typeCheck = genTypeCheck(initParams)
   # finally, initialize or construct the object
   var initBody = newStmtList()
   case kind
