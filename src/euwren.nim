@@ -21,6 +21,9 @@ type
     wtNull = "null"
     wtString = "string"
     wtUnknown = "<wren type>"
+  WrenRef* = ref object
+    vm: Wren
+    handle: ptr WrenHandle
 
   Wren* = ref object
     ## A Wren virtual machine used for executing code.
@@ -231,6 +234,23 @@ proc run*(vm: Wren, src: string) =
   ## be used for the entry point of your program. Use ``module`` if you want to
   ## modify the module name (used in error messages).
   vm.module("main", src)
+
+proc `[]`*(vm: Wren, module, variable: string, T: typedesc): T =
+  ## Retrieves a variable from the Wren VM. This is a version for primitives
+  ## and foreign objects. If you need to access a Wren object, use the version
+  ## that doesn't accept a ``typedesc``.
+  # TODO: add checks that make sure the type is correct.
+  wrenGetVariable(vm.handle, module, variable, 22)
+  result = getSlot[T](vm.handle, 22)
+
+proc `[]`*(vm: Wren, module, variable: string): WrenRef =
+  ## Retrieves a variable from the Wren VM. This is only really useful for
+  ## working with Wren objects, since you can't access them directly. For
+  ## primitives, use the version that accepts an additional ``typedesc``.
+  new(result) do (wr: WrenRef):
+    wrenReleaseHandle(wr.vm.handle, wr.handle)
+  wrenGetVariable(vm.handle, module, variable, 22)
+  result = WrenRef(vm: vm, handle: wrenGetSlotHandle(vm.handle, 22))
 
 #--
 # End user API - foreign()
