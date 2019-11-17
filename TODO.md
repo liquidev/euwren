@@ -1,0 +1,16 @@
+- [ ] Basics
+  - [x] Running code
+  - [ ] Obtaining variables from Wren
+  - [ ] Calling Wren from Nim
+- [x] `foreign()`
+  - [x] Procs
+    - [ ] Argument type-based overloads
+  - [x] Objects
+    - [ ] Automatic public field binding
+  - [ ] Enums
+  - [ ] Symbol aliasing
+  - [ ] Automatic Wren module generation
+- [ ] Type checking
+  - [x] Inheritance
+  - [ ] Generics?
+    Don't know if it's possible, but it's worth giving a shot.
