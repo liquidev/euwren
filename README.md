@@ -77,6 +77,10 @@ wren.foreign("nim"):
       foreign static hello()
     }
   """
+# ready() must be called to ready the VM for code execution after any
+# foreign() calls. this arms the VM to do code execution with foreign type
+# checking. no calls to foreign() should be done after you call this!
+wren.ready()
 ```
 ```d
 import "nim" for Nim
@@ -105,6 +109,7 @@ wren.foreign("math"):
       foreign static sub(a, b)
     }
   """
+wren.ready()
 ```
 ```d
 import "math" for Math
@@ -152,6 +157,7 @@ wren.foreign("foo"):
       foreign name // bound implicitly (NYI)
     }
   """
+wren.ready()
 ```
 ```d
 import "foo" for Bar
@@ -190,6 +196,7 @@ wren.foreign("enums"):
   ProgLanguage - lang -> Lang
   # if a foreign() block contains an enum, the module is prepended with the
   # given enums. this also means we don't need to provide a module() block here
+wren.ready()
 ```
 ```d
 class Fruit {

@@ -29,6 +29,9 @@ type
     methods: Table[MethodSign, WrenForeignMethodFn]
     classes: Table[ClassSign, WrenForeignClassMethods]
 
+    typeNames: Table[uint16, string]
+    parentTypeIds: Table[uint16, set[uint16]]
+
     compileErrors: seq[WrenError]
     rtError: WrenError
   WrenErrorKind* = enum
@@ -152,6 +155,13 @@ proc getSlotType*(vm: RawVM, slot: int): WrenType =
 proc getSlotForeignId*(vm: RawVM, slot: int): uint16 =
   result = cast[ptr uint16](wrenGetSlotForeign(vm, slot.cint))[]
 
+proc getSlotTypeString*(vm: RawVM, slot: int): string =
+  let ty = vm.getSlotType(slot)
+  if ty != wtForeign: result = $ty
+  else:
+    let wvm = cast[Wren](wrenGetUserData(vm))
+    result = wvm.typeNames[vm.getSlotForeignId(slot)]
+
 proc newForeign*(vm: RawVM, slot: int, size: Natural, classSlot = 0): pointer =
   result = wrenSetSlotNewForeign(vm, slot.cint, classSlot.cint, size.cuint)
 
@@ -169,22 +179,17 @@ proc abortFiber*(vm: RawVM, message: string) =
   vm.setSlot[:string](23, message)
   wrenAbortFiber(vm, 23)
 
-var
-  typeIds {.compileTime.}: Table[string, uint16]
-    ## Maps type hashes to unique integer IDs
-  typeNames {.compileTime.}: Table[uint16, string]
-    ## Maps integer IDs to type names
-  parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
-
-proc checkParent*(base, compare: uint16): bool =
+proc checkParent*(vm: RawVM, base, compare: uint16): bool =
   ## Check if the ``compare`` type is one of ``base``'s parent types.
   ## Used internally for type checking with inheritance.
-  result = compare in parentTypeIds[base]
+  let wvm = cast[Wren](wrenGetUserData(vm))
+  result = base in wvm.parentTypeIds[compare]
 
-proc addTypeName*(id: uint16, name: string) =
+proc addTypeInfo*(vm: Wren, id: uint16, name: string, parents: set[uint16]) =
   ## This is an implementation detail used internally by the wrapper.
   ## You should not use this in your code.
-  typeNames[id] = name
+  vm.typeNames[id] = name
+  vm.parentTypeIds[id] = parents
 
 proc addProc*(vm: Wren, module, class, signature: string, isStatic: bool,
               impl: WrenForeignMethodFn) =
@@ -255,6 +260,8 @@ proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
   error("couldn't find overload for given parameter types")
 
 proc getParent(typeSym: NimNode): NimNode =
+  ## Get the parent type for the given type symbol, or ``nil`` if the type has
+  ## no parent type.
   var impl = typeSym.getImpl[2]
   impl.expectKind({nnkRefTy, nnkObjectTy})
   while impl.kind == nnkRefTy:
@@ -262,6 +269,15 @@ proc getParent(typeSym: NimNode): NimNode =
   impl.expectKind(nnkObjectTy)
   if impl[1].kind != nnkEmpty:
     result = impl[1][0]
+
+var
+  # compile-time data about types
+  typeIds {.compileTime.}: Table[string, uint16]
+    ## Maps type hashes to unique integer IDs
+  typeNames {.compileTime.}: Table[uint16, string]
+    ## Maps the unique IDs to actual names
+  parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
+    ## Maps the unique IDs to their parents' IDs
 
 proc getTypeId(typeSym: NimNode): uint16 =
   let hash = typeSym.signatureHash
@@ -322,13 +338,34 @@ proc genTypeCheck*(types: varargs[NimNode]): NimNode =
         typeIdLit = newLit(typeId)
         slotId = newCall("getSlotForeignId", ident"vm", newLit(i + 1))
         idCheck = newTree(nnkInfix, ident"==", slotId, typeIdLit)
-        parentCheck = newCall(ident"checkParent", typeIdLit, slotId)
+        parentCheck = newCall(ident"checkParent", ident"vm", typeIdLit, slotId)
       checks.add(newPar(newTree(nnkInfix, ident"or", idCheck, parentCheck)))
 
   # fold the list of checks to an nnkInfix node
   result = checks[^1]
   for i in countdown(checks.len - 2, 0):
     result = newTree(nnkInfix, ident"and", checks[i], result)
+
+proc genTypeError*(theProc: NimNode, arity: int,
+                   overloads: varargs[NimNode]): NimNode =
+  result = newStmtList()
+  let
+    errVar = newVarStmt(ident"err",
+                        newLit("type mismatch: got <"))
+    fiberAbort = newCall("abortFiber", ident"vm", ident"err")
+  result.add([errVar])
+  for i in 1..arity:
+    result.add(newCall("add", ident"err",
+                       newCall("getSlotTypeString", ident"vm", newLit(i))))
+    if i != arity:
+      result.add(newCall("add", ident"err", newLit", "))
+  var expectedStr = ""
+  for overload in overloads:
+    let impl = overload.getImpl
+    expectedStr.add("  " & impl[0].repr & impl[3].repr)
+  result.add(newCall("add", ident"err",
+                     newLit(">\nbut expected one of:\n" & expectedStr)))
+  result.add(fiberAbort)
 
 proc genProcGlue(theProc: NimNode, isGetter: bool): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
@@ -353,7 +390,9 @@ proc genProcGlue(theProc: NimNode, isGetter: bool): NimNode =
                 ident"vm", newLit(0), call)
   # generate type check
   let typeCheck = genTypeCheck(procParams)
-  body.add(newIfStmt((cond: typeCheck, body: callWithReturn)))
+  body.add(newIfStmt((cond: typeCheck, body: callWithReturn))
+           .add(newTree(nnkElse,
+                        genTypeError(theProc, procParams.len, theProc))))
   result.body = body
 
 proc genSignature(procName: string, arity: int,
@@ -402,9 +441,10 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
     isStaticLit = newLit(isStatic)
     nameLit = newLit(genSignature(theProc.strVal, procParams.len,
                                   isStatic, isGetter))
-  result = newCall("addProc", vm, module,
-                   classLit, nameLit, isStaticLit,
-                   genProcGlue(theProc, isGetter))
+  result = newStmtList()
+  result.add(newCall("addProc", vm, module,
+                     classLit, nameLit, isStaticLit,
+                     genProcGlue(theProc, isGetter)))
 
 type
   InitProcKind = enum
@@ -501,7 +541,9 @@ proc genInitGlue(vm, class, procSym: NimNode,
     if procRetType.isRef:
       initBody.add(newCall("GC_ref",
                            newTree(nnkBracketExpr, ident"foreignData")))
-  body.add(newIfStmt((cond: typeCheck, body: initBody)))
+  body.add(newIfStmt((cond: typeCheck, body: initBody))
+           .add(newTree(nnkElse,
+                        genTypeError(theProc, procParams.len, theProc))))
   result.body = body
 
 proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
@@ -614,9 +656,10 @@ proc getAddClassAuxCall(vm, module, class, initProc, destroyProc: NimNode,
 
 macro foreign*(vm: Wren, module: string, body: untyped): untyped =
   body.expectKind(nnkStmtList)
-  # we begin with an empty module
-  # this module is later used in a ``module()`` call
-  var stmts = newTree(nnkStmtList, newVarStmt(ident"modSrc", newLit("")))
+  var
+    # we begin with an empty module
+    # this module is later used in a ``module()`` call
+    stmts = newTree(nnkStmtList, newVarStmt(ident"modSrc", newLit("")))
   for decl in body:
     case decl.kind
     of nnkCallKinds:
@@ -683,6 +726,19 @@ macro foreign*(vm: Wren, module: string, body: untyped): untyped =
   stmts.add(newCall("module", vm, module, ident"modSrc"))
   result = newBlockStmt(stmts)
 
+macro ready*(vm: Wren): untyped =
+  ## Arms the VM for foreign code execution. This **must** be called after
+  ## any and all ``foreign()`` calls are done and before you execute any code
+  ## that uses foreign data inside Wren, otherwise type checking will not work.
+  result = newStmtList()
+  for id, name in typeNames:
+    let parents = parentTypeIds[id]
+    result.add(newCall(ident"addTypeInfo", vm,
+                       newLit(id), newLit(name), newLit(parents)))
+  typeIds.clear()
+  typeNames.clear()
+  parentTypeIds.clear()
+
 when isMainModule:
   proc add(x, y: int): int = x + y
   proc pi: float = 3.14159265
@@ -713,3 +769,4 @@ when isMainModule:
         [get] pi
       Greeter:
         [init] init(var Greeter, string)
+    wrenVM.ready()

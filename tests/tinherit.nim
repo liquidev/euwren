@@ -47,12 +47,15 @@ wren.foreign("inherit"):
       foreign static printC(c)
     }
   """
+wren.ready()
 
 wren.run("""
 import "inherit" for A, B, C, Test
 
+System.print("testing")
+
 var a = A.new(1)
-var b = B.new(a, 3)
+var b = B.new(2, 3)
 
 Test.printA(b)
 
