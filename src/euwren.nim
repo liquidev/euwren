@@ -15,15 +15,30 @@ type
 
   WrenType* = enum
     wtBool = "bool"
-    wtNum = "number"
+    wtNumber = "number"
     wtForeign = "foreign"
     wtList = "list"
     wtNull = "null"
     wtString = "string"
     wtUnknown = "<wren type>"
+
   WrenRef* = ref object
     vm: Wren
     handle: ptr WrenHandle
+  WrenMethod* = ref object
+    vm: Wren
+    callHandle: ptr WrenHandle
+  WrenValueKind = enum
+    wvkBool
+    wvkNumber
+    wvkString
+    wvkWrenRef
+  WrenValue = object
+    case kind: WrenValueKind
+    of wvkBool: boolVal: bool
+    of wvkNumber: numVal: float
+    of wvkString: strVal: string
+    of wvkWrenRef: wrenRef: WrenRef
 
   Wren* = ref object
     ## A Wren virtual machine used for executing code.
@@ -53,6 +68,14 @@ type
 proc `$`*(vm: Wren): string =
   result = "- Wren instance\n" &
            "VM: " & $cast[int](vm.handle) & '\n'
+
+proc raw*(vm: Wren): RawVM =
+  ## Returns the raw VM from the Wren instance.
+  vm.handle
+
+proc raw*(wr: WrenRef): ptr WrenHandle =
+  ## Returns the raw WrenHandle.
+  wr.handle
 
 proc newWren*(): Wren =
   ## Creates a new VM.
@@ -144,6 +167,11 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
     result = newString(len.Natural)
     if len > 0:
       copyMem(result[0].unsafeAddr, bytes, len.Natural)
+  elif T is WrenRef:
+    new(result) do (wr: WrenRef):
+      wrenReleaseHandle(wr.vm.handle, wr.handle)
+    result = WrenRef(vm: cast[Wren](wrenGetUserData(vm)),
+                     handle: wrenGetSlotHandle(vm, slot.cint))
   elif T is object or T is ref object:
     let
       raw = cast[ptr UncheckedArray[uint16]](wrenGetSlotForeign(vm, slot.cint))
@@ -175,6 +203,8 @@ proc setSlot*[T](vm: RawVM, slot: int, val: T) =
     wrenSetSlotDouble(vm, slot.cint, val.cdouble)
   elif T is string:
     wrenSetSlotBytes(vm, slot.cint, val, val.len.cuint)
+  elif T is WrenRef:
+    wrenSetSlotHandle(vm, slot.cint, val.handle)
   else:
     {.error: "unsupported type for slot assignment: " & $T.}
 
@@ -210,10 +240,8 @@ proc addClass*(vm: Wren, module, name: string,
 # End user API - basics
 #--
 
-proc module*(vm: Wren, name, src: string) =
-  ## Runs the provided source code inside of the specified `main` module.
-  let result = wrenInterpret(vm.handle, name, src)
-  case result
+proc checkRuntimeError(vm: Wren, interpretResult: WrenInterpretResult) =
+  case interpretResult
   of WREN_RESULT_SUCCESS: discard
   of WREN_RESULT_COMPILE_ERROR:
     var err = new(WrenError)
@@ -228,6 +256,10 @@ proc module*(vm: Wren, name, src: string) =
       err.msg &= "\n  at " & t.module & '(' & $t.line & ')'
     raise err
   else: doAssert(false) # unreachable
+
+proc module*(vm: Wren, name, src: string) =
+  ## Runs the provided source code inside of the specified `main` module.
+  vm.checkRuntimeError(wrenInterpret(vm.handle, name, src))
 
 proc run*(vm: Wren, src: string) =
   ## Runs the provided source code inside of a module named "main". This should
@@ -251,6 +283,36 @@ proc `[]`*(vm: Wren, module, variable: string): WrenRef =
     wrenReleaseHandle(wr.vm.handle, wr.handle)
   wrenGetVariable(vm.handle, module, variable, 22)
   result = WrenRef(vm: vm, handle: wrenGetSlotHandle(vm.handle, 22))
+
+proc `[]`*(vm: Wren, signature: string): WrenMethod =
+  ## Creates a 'call handle' to the method denoted by ``methodSignature``.
+  new(result) do (wm: WrenMethod):
+    wrenReleaseHandle(wm.vm.handle, wm.callHandle)
+  result = WrenMethod(vm: vm,
+                      callHandle: wrenMakeCallHandle(vm.handle, signature))
+
+converter toWrenValue*(val: bool): WrenValue =
+  WrenValue(kind: wvkBool, boolVal: val)
+converter toWrenValue*(val: SomeNumber): WrenValue =
+  WrenValue(kind: wvkNumber, numVal: val.float)
+converter toWrenValue*(val: string): WrenValue =
+  WrenValue(kind: wvkString, strVal: val)
+converter toWrenValue*(val: WrenRef): WrenValue =
+  WrenValue(kind: wvkWrenRef, wrenRef: val)
+
+proc call*(vm: Wren, theMethod: WrenMethod,
+           receiver: WrenRef, args: varargs[WrenValue]) =
+  ## Calls the given method with the given arguments. The first argument must
+  ## always be present, and is the receiver of the method. The rest of the
+  ## arguments is optional.
+  vm.handle.setSlot[:WrenRef](0, receiver)
+  for i, arg in args:
+    case arg.kind
+    of wvkBool: vm.handle.setSlot[:bool](i + 1, arg.boolVal)
+    of wvkNumber: vm.handle.setSlot[:float](i + 1, arg.numVal)
+    of wvkString: vm.handle.setSlot[:string](i + 1, arg.strVal)
+    of wvkWrenRef: vm.handle.setSlot[:WrenRef](i + 1, arg.wrenRef)
+  vm.checkRuntimeError(wrenCall(vm.handle, theMethod.callHandle))
 
 #--
 # End user API - foreign()
@@ -342,7 +404,7 @@ proc genTypeCheck*(types: varargs[NimNode]): NimNode =
     let
       wrenType =
         if ty.typeKind == ntyBool: wtBool
-        elif ty.typeKind in Nums: wtNum
+        elif ty.typeKind in Nums: wtNumber
         elif ty.typeKind == ntyString: wtString
         elif ty.typeKind in Foreign: wtForeign
         else:

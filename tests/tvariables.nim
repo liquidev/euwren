@@ -2,10 +2,20 @@ import euwren
 
 var wren = newWren()
 
-wren.run("""
+wren.module("main", """
 var x = 42
+
+class Program {
+  static run() {
+    System.print("hello")
+  }
+}
 """)
 
-let wrenX = wren["main", "x", float]
-assert wrenX == 42
-echo wrenX
+let
+  classProgram = wren["main", "Program"]
+echo wren.raw.getSlotTypeString(22)
+let
+  runCall = wren["run()"]
+
+# wren.call(runCall, classProgram)
