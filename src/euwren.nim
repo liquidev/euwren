@@ -82,7 +82,7 @@ proc newWren*(): Wren =
   new(result) do (vm: Wren):
     wrenFreeVM(vm.handle)
 
-  var config = WrenConfiguration()
+  var config: WrenConfiguration
   wrenInitConfiguration(addr config)
   # debugging
   config.writeFn = proc (vm: RawVM, text: cstring) {.cdecl.} =
@@ -133,10 +133,6 @@ proc newWren*(): Wren =
 
   result.handle = wrenNewVM(addr config)
   wrenSetUserData(result.handle, cast[pointer](result))
-  # ensure 32 slots:
-  # 16 for parameters (max amount supported by Wren)
-  # 8 for own use
-  wrenEnsureSlots(result.handle, 24)
   result.rtError = WrenError(kind: weRuntime)
 
 #--
@@ -240,7 +236,7 @@ proc addClass*(vm: Wren, module, name: string,
 # End user API - basics
 #--
 
-proc checkRuntimeError(vm: Wren, interpretResult: WrenInterpretResult) =
+proc getError*(vm: Wren, interpretResult: WrenInterpretResult): ref WrenError =
   case interpretResult
   of WREN_RESULT_SUCCESS: discard
   of WREN_RESULT_COMPILE_ERROR:
@@ -248,14 +244,18 @@ proc checkRuntimeError(vm: Wren, interpretResult: WrenInterpretResult) =
     err.msg = "compile error"
     for e in vm.compileErrors:
       err.msg &= '\n' & e.module & '(' & $e.line & "): " & e.message
-    raise err
+    result = err
   of WREN_RESULT_RUNTIME_ERROR:
     var err = new(WrenError)
     err.msg = vm.rtError.message & "\nwren stack trace:"
     for t in vm.rtError.stackTrace:
       err.msg &= "\n  at " & t.module & '(' & $t.line & ')'
-    raise err
+    result = err
   else: doAssert(false) # unreachable
+
+proc checkRuntimeError(vm: Wren, interpretResult: WrenInterpretResult) =
+  if interpretResult != WREN_RESULT_SUCCESS:
+    raise vm.getError(interpretResult)
 
 proc module*(vm: Wren, name, src: string) =
   ## Runs the provided source code inside of the specified `main` module.
@@ -852,3 +852,4 @@ when isMainModule:
       Greeter:
         [init] init(var Greeter, string)
     wrenVM.ready()
+
