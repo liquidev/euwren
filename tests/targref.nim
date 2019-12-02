@@ -25,6 +25,6 @@ wren.run("""
   }
 """)
 
-let fnCall = wren["call()"]
+let fnCall = wren{"call()"}
 wren.call(fnCall, callback)
 

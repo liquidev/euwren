@@ -58,6 +58,57 @@ wren.run("""
 """)
 ```
 
+### Retrieving variables
+
+To get a primitive variable from Wren, use the subscript operator with three
+arguments.
+```nim
+wren.run("""
+  var myInt = 2
+""")
+
+               # module  name     type
+let myInt = wren["main", "myInt", int]
+assert myInt == 2
+```
+
+Any number type conversions between Nim and Wren are performed automatically.
+
+To retrieve a Wren object, eg. a class, use the subscript operator with two
+arguments.
+```nim
+wren.run("""
+  class Program {
+    static run() {
+      System.print("Hello from inside the class!")
+    }
+  }
+""")
+
+let classProgram = wren["main", "Program"]
+```
+
+### Calling methods
+
+Calling methods on Wren objects is done by first obtaining a call handle, and
+then calling the method. Note that the Wren VM **is not reentrant**, meaning
+you cannot call Wren in a foreign method.
+
+To obtain a call handle, use the curly brace operator. Then, to call the
+method, use `call()`.
+```
+# the convention for naming the variable:
+# method<name><number of arguments>
+# this convention is the preferred naming conventions for variables and fields
+# that store Wren call handles, but you're free to use any convention you want
+let methodRun0 = wren{"run()"}
+# the second parameter is the call handle to the method, the rest of parameters
+# are the arguments
+# the first argument is always the receiver of the method
+# when the method is static, the receiver is the class of the method
+wren.call(methodRun0, classProgram)
+```
+
 ### Binding procs
 
 Wren is strictly class-based, but Nim is not—that means that any procs passed to
@@ -116,10 +167,42 @@ import "math" for Math
 System.print(Math.add(2, 2)) // Output: 4
 ```
 
+Nim procedures can accept `WrenRef` as arguments. This allows Wren objects to
+be passed to Nim:
+```nim
+# this example also demonstrates a way of passing callbacks from Wren to Nim,
+# but this works for any Wren type (eg. classes)
+var onTickFn: WrenRef
+
+proc onTick(callback: WrenRef) =
+  onTickFn = callback
+
+wren.foreign("engine"):
+  Engine:
+    onTick
+  module """
+    class Engine {
+      foreign static onTick(callback)
+    }
+  """
+wren.ready()
+
+wren.run(code)
+
+let methodCall0 = wren{"call()"}
+wren.call(methodCall0, onTickFn)
+```
+```d
+import "engine" for Engine
+Engine.onTick {
+  System.println("Hello from callback!")
+}
+```
+
 ### Binding objects
 
 Binding objects is very similar to procs. All *public* object fields are
-exported to Wren.
+exported to Wren (NYI).
 
 ```nim
 type

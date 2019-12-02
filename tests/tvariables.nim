@@ -16,7 +16,7 @@ class Program {
 
 let
   programClass = wren["main", "Program"] 
-  runCallHandle = wren["run()"] 
+  runCallHandle = wren{"run()"} 
 
 wren.call(runCallHandle, programClass)
 

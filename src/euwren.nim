@@ -284,7 +284,7 @@ proc `[]`*(vm: Wren, module, variable: string): WrenRef =
   result.vm = vm
   result.handle = wrenGetSlotHandle(vm.handle, 1)
 
-proc `[]`*(vm: Wren, signature: string): WrenRef =
+proc `{}`*(vm: Wren, signature: string): WrenRef =
   ## Creates a 'call handle' to the method denoted by ``methodSignature``.
   new(result) do (wm: WrenRef):
     wrenReleaseHandle(wm.vm.handle, wm.handle)
