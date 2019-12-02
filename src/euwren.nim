@@ -25,9 +25,6 @@ type
   WrenRef* = ref object
     vm: Wren
     handle: ptr WrenHandle
-  WrenMethod* = ref object
-    vm: Wren
-    callHandle: ptr WrenHandle
   WrenValueKind = enum
     wvkBool
     wvkNumber
@@ -284,14 +281,15 @@ proc `[]`*(vm: Wren, module, variable: string): WrenRef =
     wrenReleaseHandle(wr.vm.handle, wr.handle)
   wrenEnsureSlots(vm.handle, 1)
   wrenGetVariable(vm.handle, module, variable, 1)
-  result = WrenRef(vm: vm, handle: wrenGetSlotHandle(vm.handle, 1))
+  result.vm = vm
+  result.handle = wrenGetSlotHandle(vm.handle, 1)
 
-proc `[]`*(vm: Wren, signature: string): WrenMethod =
+proc `[]`*(vm: Wren, signature: string): WrenRef =
   ## Creates a 'call handle' to the method denoted by ``methodSignature``.
-  new(result) do (wm: WrenMethod):
-    wrenReleaseHandle(wm.vm.handle, wm.callHandle)
-  result = WrenMethod(vm: vm,
-                      callHandle: wrenMakeCallHandle(vm.handle, signature))
+  new(result) do (wm: WrenRef):
+    wrenReleaseHandle(wm.vm.handle, wm.handle)
+  result.vm = vm
+  result.handle = wrenMakeCallHandle(vm.handle, signature)
 
 converter toWrenValue*(val: bool): WrenValue =
   WrenValue(kind: wvkBool, boolVal: val)
@@ -302,7 +300,7 @@ converter toWrenValue*(val: string): WrenValue =
 converter toWrenValue*(val: WrenRef): WrenValue =
   WrenValue(kind: wvkWrenRef, wrenRef: val)
 
-proc call*(vm: Wren, theMethod: WrenMethod,
+proc call*(vm: Wren, theMethod: WrenRef,
            receiver: WrenRef, args: varargs[WrenValue]) =
   ## Calls the given method with the given arguments. The first argument must
   ## always be present, and is the receiver of the method. The rest of the
@@ -315,7 +313,7 @@ proc call*(vm: Wren, theMethod: WrenMethod,
     of wvkNumber: vm.handle.setSlot[:float](i + 1, arg.numVal)
     of wvkString: vm.handle.setSlot[:string](i + 1, arg.strVal)
     of wvkWrenRef: vm.handle.setSlot[:WrenRef](i + 1, arg.wrenRef)
-  vm.checkRuntimeError(wrenCall(vm.handle, theMethod.callHandle))
+  vm.checkRuntimeError(wrenCall(vm.handle, theMethod.handle))
 
 #--
 # End user API - foreign()
@@ -409,8 +407,8 @@ proc genTypeCheck*(types: varargs[NimNode]): NimNode =
         if ty.typeKind == ntyBool: wtBool
         elif ty.typeKind in Nums: wtNumber
         elif ty.typeKind == ntyString: wtString
-        elif ty.typeKind in Foreign: wtForeign
         elif ty == bindSym"WrenRef": wtUnknown
+        elif ty.typeKind in Foreign: wtForeign
         else:
           error("unsupported type kind", ty)
           wtUnknown
