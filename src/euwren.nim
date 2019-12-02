@@ -272,8 +272,9 @@ proc `[]`*(vm: Wren, module, variable: string, T: typedesc): T =
   ## and foreign objects. If you need to access a Wren object, use the version
   ## that doesn't accept a ``typedesc``.
   # TODO: add checks that make sure the type is correct.
-  wrenGetVariable(vm.handle, module, variable, 22)
-  result = getSlot[T](vm.handle, 22)
+  wrenEnsureSlots(vm.handle, 1)
+  wrenGetVariable(vm.handle, module, variable, 0)
+  result = getSlot[T](vm.handle, 0)
 
 proc `[]`*(vm: Wren, module, variable: string): WrenRef =
   ## Retrieves a variable from the Wren VM. This is only really useful for
@@ -281,8 +282,9 @@ proc `[]`*(vm: Wren, module, variable: string): WrenRef =
   ## primitives, use the version that accepts an additional ``typedesc``.
   new(result) do (wr: WrenRef):
     wrenReleaseHandle(wr.vm.handle, wr.handle)
-  wrenGetVariable(vm.handle, module, variable, 22)
-  result = WrenRef(vm: vm, handle: wrenGetSlotHandle(vm.handle, 22))
+  wrenEnsureSlots(vm.handle, 1)
+  wrenGetVariable(vm.handle, module, variable, 1)
+  result = WrenRef(vm: vm, handle: wrenGetSlotHandle(vm.handle, 1))
 
 proc `[]`*(vm: Wren, signature: string): WrenMethod =
   ## Creates a 'call handle' to the method denoted by ``methodSignature``.
@@ -305,6 +307,7 @@ proc call*(vm: Wren, theMethod: WrenMethod,
   ## Calls the given method with the given arguments. The first argument must
   ## always be present, and is the receiver of the method. The rest of the
   ## arguments is optional.
+  wrenEnsureSlots(vm.handle, cint(1 + args.len))
   vm.handle.setSlot[:WrenRef](0, receiver)
   for i, arg in args:
     case arg.kind
@@ -407,6 +410,7 @@ proc genTypeCheck*(types: varargs[NimNode]): NimNode =
         elif ty.typeKind in Nums: wtNumber
         elif ty.typeKind == ntyString: wtString
         elif ty.typeKind in Foreign: wtForeign
+        elif ty == bindSym"WrenRef": wtUnknown
         else:
           error("unsupported type kind", ty)
           wtUnknown

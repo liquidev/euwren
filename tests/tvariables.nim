@@ -1,17 +1,10 @@
 import euwren
 import euwren/private/wren as wren_c
 
-# var
-#   wren = newWren()
-#   vm = wren.raw
-var config: WrenConfiguration
-wrenInitConfiguration(addr config)
-config.writeFn = proc (vm: ptr WrenVM, text: cstring) {.cdecl.} =
-  stdout.write(text)
-var vm = wrenNewVM(addr config)
-wrenEnsureSlots(vm, 24)
+var
+  wren = newWren()
 
-echo wrenInterpret(vm, "main", """
+wren.run("""
 var x = 42
 
 class Program {
@@ -21,16 +14,9 @@ class Program {
 }
 """)
 
-wrenEnsureSlots(vm, 1)
-
-wrenGetVariable(vm, "main", "Program", 0)
 let
-  programClass = wrenGetSlotHandle(vm, 0)
-  runCallHandle = wrenMakeCallHandle(vm, "run()")
+  programClass = wren["main", "Program"] 
+  runCallHandle = wren["run()"] 
 
-wrenEnsureSlots(vm, 1)
-wrenSetSlotHandle(vm, 0, programClass)
-let callResult = wrenCall(vm, runCallHandle)
-
-echo callResult
+wren.call(runCallHandle, programClass)
 
