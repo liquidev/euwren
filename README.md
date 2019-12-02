@@ -96,7 +96,7 @@ you cannot call Wren in a foreign method.
 
 To obtain a call handle, use the curly brace operator. Then, to call the
 method, use `call()`.
-```
+```nim
 # the convention for naming the variable:
 # method<name><number of arguments>
 # this convention is the preferred naming conventions for variables and fields
