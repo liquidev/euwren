@@ -11,10 +11,10 @@ const
   Include = Src/"include"
 
 static:
-  gitPull("https://github.com/wren-lang/wren.git", Base, """
+  gitPull("https://github.com/liquid600pgm/wren.git", Base, """
 src/vm/*
 src/optional/*
-src/include/*""")
+src/include/*""", "fix-710")
 
 cIncludeDir(Include)
 cIncludeDir(Vm)

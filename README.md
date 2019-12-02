@@ -230,3 +230,8 @@ System.print(Lang.Wren) // 1
   `foreign()`, and they make the DSL possible by deferring all binding to the
   semantic pass. There are lots of implementation details here, feel free to
   read the source code if you're interested.
+- Currently, euwren uses a fork of Wren that fixes an issue related to slots
+  in the VM. This fork is not the same as the current stable version of Wren,
+  but it will be used until [Wren/#712](https://github.com/wren-lang/wren/pull/712)
+  is fixed.
+
