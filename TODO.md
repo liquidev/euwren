@@ -1,7 +1,7 @@
-- [ ] Basics
+- [x] Basics
   - [x] Running code
-  - [ ] Obtaining variables from Wren
-  - [ ] Calling Wren from Nim
+  - [x] Obtaining variables from Wren
+  - [x] Calling Wren from Nim
 - [x] `foreign()`
   - [x] Procs
     - [ ] Argument type-based overloads
@@ -9,8 +9,8 @@
   - [x] Objects
     - [ ] Automatic public field binding
   - [ ] Enums
-  - [ ] Symbol aliasing
-  - [ ] Automatic Wren module generation
+  - [x] Symbol aliasing
+  - [x] Automatic Wren module generation
 - [ ] Type checking
   - [x] Inheritance
   - [ ] Generics?
