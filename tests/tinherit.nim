@@ -32,7 +32,7 @@ wren.foreign("inherit"):
   Test:
     printA
     printC
-  module """
+  """
     foreign class A {
       construct new(x) {}
     }

@@ -853,15 +853,11 @@ macro foreign*(vm: Wren, module: string, body: untyped): untyped =
     stmts = newTree(nnkStmtList, newVarStmt(ident"modSrc", newLit("")))
   for decl in body:
     case decl.kind
-    of nnkCallKinds:
-      # ``module`` blocks accept a string and append to the ``modSrc`` string
-      # described earlier
-      if eqIdent(decl[0], "module"):
-        stmts.add(newCall("add", ident"modSrc", decl[1]))
-        stmts.add(newCall("add", ident"modSrc", newLit('\n')))
-      # namespace and object bindings
-      elif decl.kind == nnkCall:
-        stmts.add(genClassBinding(vm, module, decl))
+    of nnkCall:
+      stmts.add(genClassBinding(vm, module, decl))
+    of nnkStrLit..nnkTripleStrLit:
+      stmts.add(newCall("add", ident"modSrc", decl))
+      stmts.add(newCall("add", ident"modSrc", newLit('\n')))
     else:
       # any other bindings are invalid
       error("invalid foreign binding", decl)

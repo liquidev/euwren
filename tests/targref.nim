@@ -10,7 +10,7 @@ proc setCallback(cb: WrenRef) =
 wren.foreign("game"):
   Game:
     setCallback
-  module """
+  """
     foreign class Game {
       foreign static setCallback(callback)
     }

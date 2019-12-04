@@ -24,7 +24,7 @@ wren.foreign("math"):
   Math:
     add(int, int)
     [get] pi
-  module """
+  """
     class Math {
       foreign static add(x, y)
       foreign static pi
@@ -36,7 +36,7 @@ expandMacros:
     Greeter:
       [new] initGreeter
       [get] getGreeting -> greeting
-    module """
+    """
       foreign class Greeter {
         construct new(target) {}
         foreign greeting
