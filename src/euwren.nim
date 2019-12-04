@@ -1,4 +1,5 @@
 import macros
+import strutils
 import tables
 
 import euwren/private/wren
@@ -363,6 +364,7 @@ var
     ## Maps the unique IDs to their parents' IDs
 
 proc getTypeId(typeSym: NimNode): uint16 =
+  ## Get a unique type ID for the given type symbol.
   let hash = typeSym.signatureHash
   if hash notin typeIds:
     let
@@ -378,6 +380,8 @@ proc getTypeId(typeSym: NimNode): uint16 =
   result = typeIds[hash]
 
 proc getSlotGetters(params: seq[NimNode]): seq[NimNode] =
+  ## Get a list of getSlot() calls which extract the given parameters from
+  ## the VM.
   for i, paramType in params:
     let getter = newCall(newTree(nnkBracketExpr, ident"getSlot", paramType),
                          ident"vm", newLit(i + 1))
@@ -432,6 +436,7 @@ proc genTypeCheck*(types: varargs[NimNode]): NimNode =
 
 proc genTypeError*(theProc: NimNode, arity: int,
                    overloads: varargs[NimNode]): NimNode =
+  ## Generate a Nim-like type mismatch error.
   result = newStmtList()
   let
     errVar = newVarStmt(ident"err",
@@ -539,6 +544,7 @@ proc newCast(T, val: NimNode): NimNode =
   newTree(nnkCast, T, val)
 
 proc isRef(class: NimNode): bool =
+  ## Checks if the given type symbol represents a ref type.
   if class.typeKind == ntyRef:
     result = true
   elif class.typeKind == ntyTypeDesc:
@@ -738,6 +744,89 @@ proc getAddClassAuxCall(vm, module, class, initProc, destroyProc: NimNode,
     callArgs.add(getOverloadParams(initProc))
     result = newCall(ident"addClassAux", callArgs)
 
+proc isWrenIdent(str: string): bool =
+  ## Checks if the given string represents a valid Wren identifier.
+  ## Wren identifiers have different rules from Nim identitiers—namely, the can
+  ## have trailing underscores, and two or more consecutive underscores.
+  if str.len == 0 or str[0] == '_' or str[0] notin IdentStartChars:
+    return false
+  for c in str:
+    if c notin IdentChars:
+      return false
+  result = true
+
+proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
+  if decl.kind == nnkInfix and decl[0].strVal == "->":
+    decl[2].expectKind({nnkIdent, nnkStrLit})
+    if decl[2].kind == nnkStrLit:
+      if not decl[2].strVal.isWrenIdent:
+        error("not a valid Wren identifier", decl[2])
+    result = (nim: decl[1], wren: decl[2].strVal)
+  elif decl.kind == nnkIdent:
+    result = (nim: decl, wren: decl.repr)
+  else:
+    error("invalid binding", decl)
+
+proc getClassAlias(decl: NimNode): tuple[class, procs: NimNode, wren: string] =
+  if decl.kind == nnkInfix:
+    let (nim, wren) = getAlias(decl)
+    result = (class: nim, procs: decl[3], wren: wren)
+  elif decl.kind == nnkCall:
+    result = (class: decl[0], procs: decl[1], wren: decl[0].repr)
+  else:
+    error("invalid binding", decl)
+
+proc genClassBinding(vm, module, decl: NimNode): NimNode =
+  result = newStmtList()
+  let (class, procs, wrenClass) = getClassAlias(decl)
+  # object-specific procedures
+  # If at least procInit or procNew is not nil, a class will be created
+  # ``procInit`` and ``procNew`` are mutually exclusive, only one can
+  # be present at a time
+  # ``procDestroy`` is optional but one of the initializer procs must
+  # be present
+  # If none are present, no foreign class will be created, and the procs
+  # will be bound to a namespace
+  var
+    procInit, procDestroy: NimNode = nil
+    initProcKind: InitProcKind
+    isObject = false
+  for p in procs:
+    if p.kind == nnkCommand and p[0].kind == nnkBracket:
+      # annotated binding
+      # [init], [new], [destroy], [get]
+      p.expectLen(2)
+      p[0][0].expectKind(nnkIdent)
+      let annotation = p[0][0].strVal
+      case annotation
+      of "init":
+        if procInit != nil:
+          error("class may only have one constructing proc", p)
+        procInit = p[1]
+        initProcKind = ipInit
+        isObject = true
+      of "new":
+        if procInit != nil:
+          error("class may only have one constructing proc", p)
+        procInit = p[1]
+        initProcKind = ipNew
+        isObject = true
+      of "destroy":
+        if procInit == nil:
+          error("[destroy] may only be used in object-binding classes", p)
+        procDestroy = p[1]
+      of "get":
+        result.add(getAddProcAuxCall(vm, module, class, p[1],
+                                     isObject, true))
+      else: error("invalid annotation", p[0][0])
+    else:
+      # regular binding
+      result.add(getAddProcAuxCall(vm, module, class,
+                                   p, isObject))
+  if procInit != nil:
+    result.add(getAddClassAuxCall(vm, module, class,
+                                  procInit, procDestroy, initProcKind))
+
 macro foreign*(vm: Wren, module: string, body: untyped): untyped =
   body.expectKind(nnkStmtList)
   var
@@ -754,56 +843,7 @@ macro foreign*(vm: Wren, module: string, body: untyped): untyped =
         stmts.add(newCall("add", ident"modSrc", newLit('\n')))
       # namespace and object bindings
       elif decl.kind == nnkCall:
-        let
-          class = decl[0]
-          procs = decl[1]
-        # object-specific procedures
-        # If at least procInit or procNew is not nil, a class will be created
-        # ``procInit`` and ``procNew`` are mutually exclusive, only one can
-        # be present at a time
-        # ``procDestroy`` is optional but one of the initializer procs must
-        # be present
-        # If none are present, no foreign class will be created, and the procs
-        # will be bound to a namespace
-        var
-          procInit, procDestroy: NimNode = nil
-          initProcKind: InitProcKind
-          isObject = false
-        for p in procs:
-          if p.kind == nnkCommand and p[0].kind == nnkBracket:
-            # annotated binding
-            # [init], [new], [destroy], [get]
-            p.expectLen(2)
-            p[0][0].expectKind(nnkIdent)
-            let annotation = p[0][0].strVal
-            case annotation
-            of "init":
-              if procInit != nil:
-                error("class may only have one constructing proc", p)
-              procInit = p[1]
-              initProcKind = ipInit
-              isObject = true
-            of "new":
-              if procInit != nil:
-                error("class may only have one constructing proc", p)
-              procInit = p[1]
-              initProcKind = ipNew
-              isObject = true
-            of "destroy":
-              if procInit == nil:
-                error("[destroy] may only be used in object-binding classes", p)
-              procDestroy = p[1]
-            of "get":
-              stmts.add(getAddProcAuxCall(vm, module, class, p[1],
-                                          isObject, true))
-            else: error("invalid annotation", p[0][0])
-          else:
-            # regular binding
-            stmts.add(getAddProcAuxCall(vm, module, class,
-                                        p, isObject))
-        if procInit != nil:
-          stmts.add(getAddClassAuxCall(vm, module, class,
-                                       procInit, procDestroy, initProcKind))
+        stmts.add(genClassBinding(vm, module, decl))
     else:
       # any other bindings are invalid
       error("invalid foreign binding", decl)
@@ -825,7 +865,7 @@ macro ready*(vm: Wren): untyped =
 
 when isMainModule:
   proc add(x, y: int): int = x + y
-  proc pi: float = 3.14159265
+  proc getPi(): float = 3.14159265
 
   type
     Greeter = object
@@ -850,7 +890,6 @@ when isMainModule:
         `+`(Vec2, Vec2)
         `+`(Vec3, Vec3)
         `-`(Vec3, Vec3)
-        [get] pi
       Greeter:
         [init] init(var Greeter, string)
     wrenVM.ready()
