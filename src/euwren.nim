@@ -328,6 +328,12 @@ proc getParamList(formalParams: NimNode): seq[NimNode] =
     for i in 0..identDefs.len - 3:
       result.add(ty)
 
+proc getParamNames(formalParams: NimNode): seq[string] =
+  ## Get the names of the parameters in the formalParams as a single list.
+  for identDefs in formalParams[1..^1]:
+    for name in identDefs[0..^3]:
+      result.add(name.strVal)
+
 proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
   ## Finds an appropriate proc overload based on the provided parameters.
   for overload in choices:
@@ -484,18 +490,31 @@ proc genProcGlue(theProc: NimNode, isGetter: bool): NimNode =
                         genTypeError(theProc, procParams.len, theProc))))
   result.body = body
 
-proc genSignature(procName: string, arity: int,
-                  isStatic, isGetter: bool): string =
+proc genSignature(theProc: NimNode, wrenName: string,
+                  isStatic, isGetter: bool, namedParams = false): string =
   ## Generate a Wren signature for the given proc and its properties.
+  ## If ``namedParams`` is true, a 'nice' signature will be generated with
+  ## parameter names embedded into it.
 
+  var
+    param = ord(not isStatic)
+    paramNames = getParamNames(theProc.getImpl[3])
+    arity = paramNames.len
   proc params(n: int): string =
     ## Generate a string of params like _,_,_,_
-    for i in 1..n:
-      result.add('_')
-      if i != n:
-        result.add(',')
+    if namedParams:
+      for i in 1..n:
+        result.add(paramNames[param])
+        if i != n:
+          result.add(", ")
+        inc(param)
+    else:
+      for i in 1..n:
+        result.add('_')
+        if i != n:
+          result.add(',')
 
-  var name = procName
+  var name = wrenName
   name.removePrefix('`')
   name.removeSuffix('`')
   if not isGetter:
@@ -503,11 +522,20 @@ proc genSignature(procName: string, arity: int,
     if name == "[]":
       result = '[' & arity.params & ']'
     elif name == "[]=":
-      result = '[' & (arity - 1).params & "]=(_)"
+      result = '[' & (arity - 1).params & "]=(" & params(1) & ")"
     else:
       result = name & '(' & arity.params & ')'
   else:
     result = name
+
+proc resolveOverload(procSym: NimNode, overloaded: bool,
+                     params: varargs[NimNode]): NimNode =
+  result = procSym
+  if procSym.kind != nnkSym:
+    if not overloaded:
+      error("multiple overloads available; " &
+            "provide the correct overload's parameters", procSym)
+    result = getOverload(procSym, params)
 
 macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
                   procSym: typed, wrenName: static string,
@@ -517,12 +545,7 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
   ## This is an implementation detail and you should not use it in your code.
 
   # find the correct overload of the procedure, if applicable
-  var theProc = procSym
-  if procSym.kind != nnkSym:
-    if not overloaded:
-      error("multiple overloads available; " &
-            "provide the correct overload's parameters", procSym)
-    theProc = getOverload(procSym, params)
+  var theProc = resolveOverload(procSym, overloaded, params)
   # get some metadata about the proc
   let
     procImpl = theProc.getImpl
@@ -532,12 +555,18 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
     classLit = className
     isStatic = procParams.len < 1 or procParams[0] != classSym
     isStaticLit = newLit(isStatic)
-    nameLit = newLit(genSignature(wrenName, procParams.len,
-                                  isStatic, isGetter))
+    nameLit = newLit(genSignature(theProc, wrenName, isStatic, isGetter))
   result = newStmtList()
   result.add(newCall("addProc", vm, module,
                      classLit, nameLit, isStaticLit,
                      genProcGlue(theProc, isGetter)))
+  var wrenDecl = "foreign "
+  if isStatic:
+    wrenDecl.add("static ")
+  wrenDecl.add(genSignature(theProc, wrenName, isStatic, isGetter,
+                            namedParams = true))
+  wrenDecl.add('\n')
+  result.add(newCall("add", ident"classMethods", newLit(wrenDecl)))
 
 type
   InitProcKind = enum
@@ -556,18 +585,9 @@ proc isRef(class: NimNode): bool =
     if impl[2].kind == nnkRefTy:
       result = true
 
-proc genInitGlue(vm, class, procSym: NimNode,
-                 kind: InitProcKind, overloaded: bool,
-                 params: varargs[NimNode]): NimNode =
+proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
   ## Generates a glue init procedure with checks and type conversions.
 
-  # get the overload, if applicable
-  var theProc = procSym
-  if procSym.kind != nnkSym:
-    if not overloaded:
-      error("multiple overloads available; " &
-            "provide the correct overload's parameters", procSym)
-    theProc = getOverload(procSym, params)
   # get some metadata about the proc
   let
     procImpl = theProc.getImpl
@@ -576,9 +596,9 @@ proc genInitGlue(vm, class, procSym: NimNode,
   # do some extra checks to see if the passed proc is usable
   if kind == ipInit:
     if procParams[0] != newTree(nnkVarTy, class):
-      error("first parameter of [init] proc must be var[class]", procSym)
+      error("first parameter of [init] proc must be var[class]", theProc)
     if not (procRetType.kind == nnkEmpty or procRetType == bindSym"void"):
-      error("return type for [init] proc must be void", procSym)
+      error("return type for [init] proc must be void", theProc)
   # create the resulting init proc
   result = newProc(params = [newEmptyNode(),
                              newIdentDefs(ident"vm", ident"RawVM")])
@@ -695,11 +715,18 @@ macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
 
   # generate all the glue procs
   let
-    initGlue = genInitGlue(vm, class, initProc, initProcKind,
-                           initOverloaded, initParams)
+    initOverload = resolveOverload(initProc, initOverloaded, initParams)
+    initGlue = genInitGlue(vm, class, initOverload, initProcKind)
     destroyGlue = genDestroyGlue(vm, class, destroyProc)
-  result = newCall("addClass", vm, module, wrenClass,
-                   initGlue, destroyGlue)
+  result = newStmtList()
+  result.add(newCall("addClass", vm, module, wrenClass,
+                     initGlue, destroyGlue))
+  let ctorDecl = "construct " &
+                 genSignature(initOverload, "new",
+                              isStatic = true, isGetter = false,
+                              namedParams = true) &
+                 " {}\n"
+  result.add(newCall("add", ident"classMethods", newLit(ctorDecl)))
 
 proc getOverloadParams(def: NimNode): seq[NimNode] =
   ## Returns the overload's parameters as a raw seq.
@@ -791,8 +818,10 @@ proc getClassAlias(decl: NimNode): tuple[class, procs: NimNode, wren: string] =
     error("invalid binding", decl)
 
 proc genClassBinding(vm, module, decl: NimNode): NimNode =
-  result = newStmtList()
+  var stmts = newStmtList()
+  stmts.add(newVarStmt(ident"classMethods", newLit("")))
   let (class, procs, wrenClass) = getClassAlias(decl)
+  var classDecl = "class " & wrenClass & " {\n"
   # object-specific procedures
   # If at least procInit or procNew is not nil, a class will be created
   # ``procInit`` and ``procNew`` are mutually exclusive, only one can
@@ -831,17 +860,22 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         procDestroy = p[1]
       of "get":
         let (nim, wren) = getAlias(p[1])
-        result.add(getAddProcAuxCall(vm, module, class, wrenClass, nim, wren,
-                                     isObject, true))
+        stmts.add(getAddProcAuxCall(vm, module, class, wrenClass, nim, wren,
+                                    isObject, true))
       else: error("invalid annotation", p[0][0])
     else:
       # regular binding
       let (nim, wren) = getAlias(p)
-      result.add(getAddProcAuxCall(vm, module, class, wrenClass,
-                                   nim, wren, isObject))
+      stmts.add(getAddProcAuxCall(vm, module, class, wrenClass,
+                                  nim, wren, isObject))
   if procInit != nil:
-    result.add(getAddClassAuxCall(vm, module, class, wrenClass,
-                                  procInit, procDestroy, initProcKind))
+    stmts.add(getAddClassAuxCall(vm, module, class, wrenClass,
+                                 procInit, procDestroy, initProcKind))
+    classDecl = "foreign " & classDecl
+  stmts.add(newCall("add", ident"modSrc", newLit(classDecl)))
+  stmts.add(newCall("add", ident"modSrc", ident"classMethods"))
+  stmts.add(newCall("add", ident"modSrc", newLit("}\n")))
+  result = newBlockStmt(stmts)
 
 macro foreign*(vm: Wren, module: string, body: untyped): untyped =
   ## Bind foreign things into the Wren VM. Refer to the README for details on
@@ -862,6 +896,8 @@ macro foreign*(vm: Wren, module: string, body: untyped): untyped =
       # any other bindings are invalid
       error("invalid foreign binding", decl)
   stmts.add(newCall("module", vm, module, ident"modSrc"))
+  when defined(euwrenDumpForeignModule):
+    stmts.add(newCall("echo", ident"modSrc"))
   result = newBlockStmt(stmts)
 
 macro ready*(vm: Wren): untyped =

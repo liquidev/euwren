@@ -24,24 +24,12 @@ wren.foreign("math"):
   Math:
     add(int, int)
     [get] pi
-  """
-    class Math {
-      foreign static add(x, y)
-      foreign static pi
-    }
-  """
 
 expandMacros:
   wren.foreign("greet"):
     Greeter:
       [new] initGreeter
       [get] getGreeting -> greeting
-    """
-      foreign class Greeter {
-        construct new(target) {}
-        foreign greeting
-      }
-    """
 
 wren.run("""
 import "greet" for Greeter
