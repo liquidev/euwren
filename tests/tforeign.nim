@@ -16,7 +16,7 @@ proc initGreeter(target: string): Greeter =
   result = Greeter()
   result.init(target)
 
-proc greeting(greeter: Greeter): string =
+proc getGreeting(greeter: Greeter): string =
   result = "Hello, " & greeter.target
 
 var wren = newWren()
@@ -35,7 +35,7 @@ expandMacros:
   wren.foreign("greet"):
     Greeter:
       [new] initGreeter
-      [get] greeting
+      [get] getGreeting -> greeting
     module """
       foreign class Greeter {
         construct new(target) {}
