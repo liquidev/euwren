@@ -756,7 +756,7 @@ proc isWrenIdent(str: string): bool =
   result = true
 
 proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
-  ## Extract the Nim name and Wren name from the given declaration. 
+  ## Extract the Nim name and Wren name from the given declaration.
   if decl.kind == nnkInfix and decl[0].strVal == "->":
     decl[2].expectKind({nnkIdent, nnkStrLit})
     if decl[2].kind == nnkStrLit:
