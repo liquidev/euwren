@@ -756,6 +756,7 @@ proc isWrenIdent(str: string): bool =
   result = true
 
 proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
+  ## Extract the Nim name and Wren name from the given declaration. 
   if decl.kind == nnkInfix and decl[0].strVal == "->":
     decl[2].expectKind({nnkIdent, nnkStrLit})
     if decl[2].kind == nnkStrLit:
@@ -768,6 +769,8 @@ proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
     error("invalid binding", decl)
 
 proc getClassAlias(decl: NimNode): tuple[class, procs: NimNode, wren: string] =
+  ## A version of ``getAlias`` for class declarations. Uses ``getAlias``
+  ## internally, so the syntax stays consistent.
   if decl.kind == nnkInfix:
     let (nim, wren) = getAlias(decl)
     result = (class: nim, procs: decl[3], wren: wren)
