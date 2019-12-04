@@ -151,7 +151,7 @@ wren.foreign("math"):
     # (this is not enforced, so be careful!)
     add(int, int)
     add(int, int, int)
-    # procs can be aliased on the Wren side (NYI)
+    # procs can be aliased on the Wren side 
     subtract -> sub
   # we need to provide the module's actual source code
   module """
@@ -221,7 +221,7 @@ proc more(foo: var Foo) =
 proc count(foo: Foo) = foo.count
 
 wren.foreign("foo"):
-  # objects can be aliased, just like procs (NYI)
+  # objects can be aliased, just like procs
   Foo -> Bar:
     # an object must have exactly one constructor or initializer, and it must
     # be the first thing that's bound
