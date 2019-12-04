@@ -495,19 +495,23 @@ proc genSignature(procName: string, arity: int,
       if i != n:
         result.add(',')
 
+  var name = procName
+  name.removePrefix('`')
+  name.removeSuffix('`')
   if not isGetter:
     let arity = arity - ord(not isStatic)
-    if procName == "[]":
+    if name == "[]":
       result = '[' & arity.params & ']'
-    elif procName == "[]=":
+    elif name == "[]=":
       result = '[' & (arity - 1).params & "]=(_)"
     else:
-      result = procName & '(' & arity.params & ')'
+      result = name & '(' & arity.params & ')'
   else:
-    result = procName
+    result = name
 
 macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
-                  procSym: typed, overloaded, isGetter: static bool,
+                  procSym: typed, wrenName: static string,
+                  overloaded, isGetter: static bool,
                   params: varargs[typed]): untyped =
   ## Generates code which binds a procedure to the provided Wren instance.
   ## This is an implementation detail and you should not use it in your code.
@@ -528,7 +532,7 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
     classLit = className
     isStatic = procParams.len < 1 or procParams[0] != classSym
     isStaticLit = newLit(isStatic)
-    nameLit = newLit(genSignature(theProc.strVal, procParams.len,
+    nameLit = newLit(genSignature(wrenName, procParams.len,
                                   isStatic, isGetter))
   result = newStmtList()
   result.add(newCall("addProc", vm, module,
@@ -645,7 +649,7 @@ proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
   if procSym.kind != nnkNilLit or class.isRef:
     # create the destructor proc
     result = newProc(params = [newEmptyNode(),
-                              newIdentDefs(ident"rawPtr", ident"pointer")])
+                               newIdentDefs(ident"rawPtr", ident"pointer")])
     result.addPragma(ident"cdecl")
     var body = newStmtList()
     # create some variables, which are conversions of ``rawPtr``
@@ -681,7 +685,7 @@ proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
   else:
     result = newNilLit()
 
-macro addClassAux*(vm: Wren, module: string, class: typed,
+macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
                    initProc, destroyProc: typed,
                    initProcKind: static InitProcKind,
                    initOverloaded: static bool,
@@ -694,7 +698,7 @@ macro addClassAux*(vm: Wren, module: string, class: typed,
     initGlue = genInitGlue(vm, class, initProc, initProcKind,
                            initOverloaded, initParams)
     destroyGlue = genDestroyGlue(vm, class, destroyProc)
-  result = newCall("addClass", vm, module, newLit(class.repr),
+  result = newCall("addClass", vm, module, wrenClass,
                    initGlue, destroyGlue)
 
 proc getOverloadParams(def: NimNode): seq[NimNode] =
@@ -702,7 +706,8 @@ proc getOverloadParams(def: NimNode): seq[NimNode] =
   for param in def[1..^1]:
     result.add(param)
 
-proc getAddProcAuxCall(vm, module, class, theProc: NimNode,
+proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
+                       theProc: NimNode, wrenName: string,
                        isObject: bool, isGetter = false): NimNode =
   # get the class metadata, depending on whether we're binding a namespace or
   # an object
@@ -710,17 +715,18 @@ proc getAddProcAuxCall(vm, module, class, theProc: NimNode,
     classSym =
       if isObject: class
       else: newNilLit()
-    className = newLit(class.repr)
   # non-overloaded proc binding
   if theProc.kind == nnkIdent:
     # defer the binding to addProcAux
     # XXX: find a way which doesn't require addProcAux to be public
-    result = newCall(ident"addProcAux", vm, module, classSym, className,
-                     theProc, newLit(false), newLit(isGetter))
+    result = newCall(ident"addProcAux", vm, module,
+                     classSym, newLit(wrenClass),
+                     theProc, newLit(wrenName),
+                     newLit(false), newLit(isGetter))
   # overloaded/getter proc binding
   elif theProc.kind in {nnkCall, nnkCommand}:
-    var callArgs = @[vm, module, classSym, className,
-                     theProc[0], newLit(true)]
+    var callArgs = @[vm, module, classSym, newLit(wrenClass),
+                     theProc[0], newLit(wrenName), newLit(true)]
     if isGetter:
       # bind a getter
       callArgs[3] = theProc[1]
@@ -731,15 +737,17 @@ proc getAddProcAuxCall(vm, module, class, theProc: NimNode,
       callArgs.add(getOverloadParams(theProc))
     result = newCall(ident"addProcAux", callArgs)
 
-proc getAddClassAuxCall(vm, module, class, initProc, destroyProc: NimNode,
+proc getAddClassAuxCall(vm, module, class: NimNode, wrenClass: string,
+                        initProc, destroyProc: NimNode,
                         initProcKind: InitProcKind): NimNode =
   # non-overloaded init proc
   if initProc.kind == nnkIdent:
-    result = newCall(ident"addClassAux", vm, module, class,
+    result = newCall(ident"addClassAux", vm, module, class, newLit(wrenClass),
                      initProc, destroyProc, newLit(initProcKind), newLit(false))
   # overloaded init proc
   else:
-    var callArgs = @[vm, module, class, initProc[0], destroyProc,
+    var callArgs = @[vm, module, class, newLit(wrenClass),
+                     initProc[0], destroyProc,
                      newLit(initProcKind), newLit(true)]
     callArgs.add(getOverloadParams(initProc))
     result = newCall(ident"addClassAux", callArgs)
@@ -763,6 +771,8 @@ proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
       if not decl[2].strVal.isWrenIdent:
         error("not a valid Wren identifier", decl[2])
     result = (nim: decl[1], wren: decl[2].strVal)
+  elif decl.kind == nnkCall:
+    result = (nim: decl, wren: decl[0].repr)
   elif decl.kind == nnkIdent:
     result = (nim: decl, wren: decl.repr)
   else:
@@ -777,6 +787,7 @@ proc getClassAlias(decl: NimNode): tuple[class, procs: NimNode, wren: string] =
   elif decl.kind == nnkCall:
     result = (class: decl[0], procs: decl[1], wren: decl[0].repr)
   else:
+    echo decl.treeRepr
     error("invalid binding", decl)
 
 proc genClassBinding(vm, module, decl: NimNode): NimNode =
@@ -819,18 +830,22 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
           error("[destroy] may only be used in object-binding classes", p)
         procDestroy = p[1]
       of "get":
-        result.add(getAddProcAuxCall(vm, module, class, p[1],
+        let (nim, wren) = getAlias(p[1])
+        result.add(getAddProcAuxCall(vm, module, class, wrenClass, nim, wren,
                                      isObject, true))
       else: error("invalid annotation", p[0][0])
     else:
       # regular binding
-      result.add(getAddProcAuxCall(vm, module, class,
-                                   p, isObject))
+      let (nim, wren) = getAlias(p)
+      result.add(getAddProcAuxCall(vm, module, class, wrenClass,
+                                   nim, wren, isObject))
   if procInit != nil:
-    result.add(getAddClassAuxCall(vm, module, class,
+    result.add(getAddClassAuxCall(vm, module, class, wrenClass,
                                   procInit, procDestroy, initProcKind))
 
 macro foreign*(vm: Wren, module: string, body: untyped): untyped =
+  ## Bind foreign things into the Wren VM. Refer to the README for details on
+  ## how to use this.
   body.expectKind(nnkStmtList)
   var
     # we begin with an empty module
@@ -893,6 +908,7 @@ when isMainModule:
         `+`(Vec2, Vec2)
         `+`(Vec3, Vec3)
         `-`(Vec3, Vec3)
+        [get] getPi -> pi
       Greeter:
         [init] init(var Greeter, string)
     wrenVM.ready()
