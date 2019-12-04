@@ -22,7 +22,7 @@ unavailable are marked with `(NYI)`.
 - Supports proc, object, and enum (NYI) binding
 - Does type checks for procedures
 - Supports operator overloading
-- Automatically generates Wren glue code with declarations
+- Automatically generates Wren glue code with declarations (experimental)
 
 ## Installing
 
@@ -124,11 +124,6 @@ wren.foreign("nim"):
   Nim:
     # bind the proc 'hello'
     hello
-  module """
-    class Nim {
-      foreign static hello()
-    }
-  """
 # ready() must be called to ready the VM for code execution after any
 # foreign() calls. this arms the VM to do code execution with foreign type
 # checking. no calls to foreign() should be done after you call this!
@@ -154,13 +149,6 @@ wren.foreign("math"):
     add(int, int, int)
     # procs can be aliased on the Wren side
     subtract -> sub
-  # we need to provide the module's actual source code
-  module """
-    class Math {
-      foreign static add(a, b)
-      foreign static sub(a, b)
-    }
-  """
 wren.ready()
 ```
 ```d
@@ -181,11 +169,6 @@ proc onTick(callback: WrenRef) =
 wren.foreign("engine"):
   Engine:
     onTick
-  module """
-    class Engine {
-      foreign static onTick(callback)
-    }
-  """
 wren.ready()
 
 wren.run(code)
@@ -232,15 +215,6 @@ wren.foreign("foo"):
     [new] initFoo
     more
     [get] count
-  module """
-    foreign class Bar {
-      construct new(name) {}
-
-      foreign more()
-      foreign count
-      foreign name // bound implicitly (NYI)
-    }
-  """
 wren.ready()
 ```
 ```d
@@ -252,9 +226,6 @@ System.print(foo.count)
 ```
 
 ### Binding enums (NYI)
-
-Binding enums is very easy, since all glue code is generated for you.
-In fact, an enum is nothing more than a class with a bunch of static getters.
 
 ```nim
 type
@@ -321,5 +292,7 @@ System.print(Lang.Wren) // 1
 - Currently, euwren uses a fork of Wren that fixes an issue related to slots
   in the VM. This fork is not the same as the current stable version of Wren,
   but it will be used until [Wren/#712](https://github.com/wren-lang/wren/pull/712)
-  is fixed.
+  is merged.
+- The generated glue code is assembled at run time, which is inefficient and
+  possibly slows binding down. This will be fixed in a future release.
 
