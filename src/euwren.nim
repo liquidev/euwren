@@ -385,15 +385,15 @@ proc getTypeId(typeSym: NimNode): uint16 =
       parentTypeIds[id] = parentTypeIds[parentId] + {parentId}
   result = typeIds[hash]
 
-proc getSlotGetters(params: seq[NimNode]): seq[NimNode] =
+proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
   ## Get a list of getSlot() calls which extract the given parameters from
   ## the VM.
   for i, paramType in params:
     let getter = newCall(newTree(nnkBracketExpr, ident"getSlot", paramType),
-                         ident"vm", newLit(i + 1))
+                         ident"vm", newLit(i + ord(isStatic)))
     result.add(getter)
 
-proc genTypeCheck*(types: varargs[NimNode]): NimNode =
+proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
   ## a big chain of conditions which check the type.
   ## This is a much better way of checking types compared to the 0.1.0
@@ -407,7 +407,8 @@ proc genTypeCheck*(types: varargs[NimNode]): NimNode =
     Foreign = {ntyObject, ntyRef}
 
   # there isn't any work to be done if the proc doesn't accept params
-  if types.len == 0: return newLit(true)
+  echo types, isStatic
+  if types.len == ord(not (isStatic or isCtor)): return newLit(true)
 
   # generate a list of checks
   var checks: seq[NimNode]
@@ -462,7 +463,7 @@ proc genTypeError*(theProc: NimNode, arity: int,
                      newLit(">\nbut expected one of:\n" & expectedStr)))
   result.add(fiberAbort)
 
-proc genProcGlue(theProc: NimNode, isGetter: bool): NimNode =
+proc genProcGlue(theProc: NimNode, isGetter, isStatic: bool): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
 
   # get some metadata about the proc
@@ -477,14 +478,14 @@ proc genProcGlue(theProc: NimNode, isGetter: bool): NimNode =
   var body = newStmtList()
   # generate the call
   let
-    call = newCall(theProc, getSlotGetters(procParams))
+    call = newCall(theProc, getSlotGetters(procParams, isStatic))
     callWithReturn =
       if procRetType.kind == nnkEmpty or eqIdent(procRetType, "void"): call
       else:
         newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
                 ident"vm", newLit(0), call)
   # generate type check
-  let typeCheck = genTypeCheck(procParams)
+  let typeCheck = genTypeCheck(procParams, isStatic, isCtor = false)
   body.add(newIfStmt((cond: typeCheck, body: callWithReturn))
            .add(newTree(nnkElse,
                         genTypeError(theProc, procParams.len, theProc))))
@@ -559,7 +560,7 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
   result = newStmtList()
   result.add(newCall("addProc", vm, module,
                      classLit, nameLit, isStaticLit,
-                     genProcGlue(theProc, isGetter)))
+                     genProcGlue(theProc, isGetter, isStatic)))
   var wrenDecl = "foreign "
   if isStatic:
     wrenDecl.add("static ")
@@ -632,7 +633,8 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
     # of initializer
     if kind == ipInit: procParams[1..^1]
     else: procParams
-  let typeCheck = genTypeCheck(initParams)
+  let typeCheck = genTypeCheck(initParams, isStatic = false, isCtor = true)
+  echo typeCheck.repr, ' ', initParams
   # finally, initialize or construct the object
   var initBody = newStmtList()
   case kind
@@ -642,13 +644,13 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
                                           ident"foreignData")))
     var initCallParams = @[newCast(newTree(nnkVarTy, class),
                                    ident"foreignData")]
-    initCallParams.add(getSlotGetters(initParams))
+    initCallParams.add(getSlotGetters(initParams, true))
     let initCall = newCall(theProc, initCallParams)
     initBody.add(initCall)
   of ipNew:
     # constructor
     let
-      ctorCall = newCall(theProc, getSlotGetters(initParams))
+      ctorCall = newCall(theProc, getSlotGetters(initParams, true))
       dataAssign = newAssignment(newTree(nnkBracketExpr, ident"foreignData"),
                                  ctorCall)
     initBody.add(dataAssign)
@@ -863,6 +865,8 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         stmts.add(getAddProcAuxCall(vm, module, class, wrenClass, nim, wren,
                                     isObject, true))
       else: error("invalid annotation", p[0][0])
+    elif p.kind in {nnkStrLit..nnkTripleStrLit}:
+      stmts.add(newCall("add", ident"classMethods", p))
     else:
       # regular binding
       let (nim, wren) = getAlias(p)

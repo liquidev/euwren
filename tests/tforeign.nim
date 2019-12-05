@@ -1,4 +1,5 @@
 import macros
+import strutils
 
 import euwren
 
@@ -13,6 +14,7 @@ proc init(greeter: var Greeter, target: string) =
   greeter.target = target
 
 proc initGreeter(target: string): Greeter =
+  echo target.escape
   result = Greeter()
   result.init(target)
 
@@ -29,11 +31,17 @@ expandMacros:
   wren.foreign("greet"):
     Greeter:
       [new] initGreeter
-      [get] getGreeting -> greeting
+      [get] getGreeting -> "greeting"
+      """
+        greet() {
+          System.print(greeting)
+        }
+      """
 
 wren.run("""
 import "greet" for Greeter
 
 var greeter = Greeter.new("world")
 System.print(greeter.greeting)
+greeter.greet()
 """)
