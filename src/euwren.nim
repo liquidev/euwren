@@ -420,7 +420,7 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
     let
       wrenType =
         if ty.typeKind == ntyBool: wtBool
-        elif ty.typeKind in Nums: wtNumber
+        elif ty.typeKind in Nums or ty.typeKind == ntyEnum: wtNumber
         elif ty.typeKind == ntyString: wtString
         elif ty == bindSym"WrenRef": wtUnknown
         elif ty.typeKind in Foreign: wtForeign
