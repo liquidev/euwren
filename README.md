@@ -19,7 +19,7 @@ unavailable are marked with `(NYI)`.
 ## Features
 
 - Syntactically simple
-- Supports proc, object, and enum (NYI) binding
+- Supports proc, object, and enum binding
 - Does type checks for procedures
 - Supports operator overloading
 - Automatically generates Wren glue code with declarations (experimental)
@@ -225,7 +225,7 @@ foo.more()
 System.print(foo.count)
 ```
 
-### Binding enums (NYI)
+### Binding enums
 
 ```nim
 type

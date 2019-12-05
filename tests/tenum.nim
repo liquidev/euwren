@@ -29,7 +29,7 @@ wren.run("""
   import "enums" for Fruit, MenuOpt, Lang
 
   System.print(Fruit.fruitApple)
-  System.print(MenuOpt.optHelp)
+  System.print(MenuOpt.Help)
   System.print(Lang.C)
 """)
 

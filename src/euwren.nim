@@ -892,13 +892,19 @@ template bindEnumAux(theEnum, wrenName, prefix) =
 
 proc genEnumBinding(decl: NimNode): NimNode =
   if decl.kind == nnkIdent:
-    let
-      theEnum = decl 
-      wrenName = decl.repr
-      prefix = ""
-    result = getAst(bindEnumAux(theEnum, wrenName, prefix))
-  else:
-    result = newTree(nnkDiscardStmt, newNilLit())
+    result = getAst(bindEnumAux(decl, decl.repr, ""))
+  elif decl.kind == nnkInfix:
+    case decl[0].strVal
+    of "-":
+      decl[1].expectKind(nnkIdent)
+      decl[2].expectKind(nnkIdent)
+      result = getAst(bindEnumAux(decl[1], decl[1].repr, decl[2].strVal))
+    of "->":
+      let (nim, wren) = getAlias(decl)
+      nim[1].expectKind(nnkIdent)
+      nim[2].expectKind(nnkIdent)
+      result = getAst(bindEnumAux(nim[1], wren, nim[2].strVal))
+    else: error("invalid enum declaration operator", decl[0])
 
 macro foreign*(vm: Wren, module: string, body: untyped): untyped =
   ## Bind foreign things into the Wren VM. Refer to the README for details on
