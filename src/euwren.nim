@@ -154,6 +154,8 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
     result = wrenGetSlotBool(vm, slot.cint)
   elif T is SomeNumber:
     result = T(wrenGetSlotDouble(vm, slot.cint))
+  elif T is enum:
+    result = T(wrenGetSlotDouble(vm, slot.cint).int)
   elif T is string:
     var
       len: cint
@@ -195,6 +197,8 @@ proc setSlot*[T](vm: RawVM, slot: int, val: T) =
     wrenSetSlotBool(vm, slot.cint, val)
   elif T is SomeNumber:
     wrenSetSlotDouble(vm, slot.cint, val.cdouble)
+  elif T is enum:
+    wrenSetSlotDouble(vm, slot.cint, ord(val).cdouble)
   elif T is string:
     wrenSetSlotBytes(vm, slot.cint, val, val.len.cuint)
   elif T is WrenRef:
