@@ -881,6 +881,25 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
   stmts.add(newCall("add", ident"modSrc", newLit("}\n")))
   result = newBlockStmt(stmts)
 
+template bindEnumAux(theEnum, wrenName, prefix) =
+  var decl = "class " & wrenName & " {\n"
+  for x in low(theEnum)..high(theEnum):
+    let ordVal = ord(x)
+    var strVal = ($x)[prefix.len..^1]
+    decl.add("static " & strVal & " { " & $ordVal & " }\n")
+  decl.add("}\n")
+  modSrc.add(decl)
+
+proc genEnumBinding(decl: NimNode): NimNode =
+  if decl.kind == nnkIdent:
+    let
+      theEnum = decl 
+      wrenName = decl.repr
+      prefix = ""
+    result = getAst(bindEnumAux(theEnum, wrenName, prefix))
+  else:
+    result = newTree(nnkDiscardStmt, newNilLit())
+
 macro foreign*(vm: Wren, module: string, body: untyped): untyped =
   ## Bind foreign things into the Wren VM. Refer to the README for details on
   ## how to use this.
@@ -892,10 +911,16 @@ macro foreign*(vm: Wren, module: string, body: untyped): untyped =
   for decl in body:
     case decl.kind
     of nnkCall:
+      # class bindings
       stmts.add(genClassBinding(vm, module, decl))
+    of nnkIdent, nnkInfix:
+      # enums
+      stmts.add(genEnumBinding(decl))
     of nnkStrLit..nnkTripleStrLit:
+      # module code injections
       stmts.add(newCall("add", ident"modSrc", decl))
       stmts.add(newCall("add", ident"modSrc", newLit('\n')))
+    of nnkDiscardStmt: discard # discard
     else:
       # any other bindings are invalid
       error("invalid foreign binding", decl)
@@ -916,36 +941,4 @@ macro ready*(vm: Wren): untyped =
   typeIds.clear()
   typeNames.clear()
   parentTypeIds.clear()
-
-when isMainModule:
-  proc add(x, y: int): int = x + y
-  proc getPi(): float = 3.14159265
-
-  type
-    Greeter = object
-      target: string
-    Vec2 = object
-      x, y: float
-    Vec3 = object
-      x, y, z: float
-
-  proc init(greeter: var Greeter, target: string) =
-    greeter.target = target
-
-  proc `+`(a, b: Vec2) = discard
-  proc `+`(a, b: Vec3) = discard
-  proc `-`(a, b: Vec3) = discard
-
-  var wrenVM = newWren()
-  expandMacros:
-    wrenVM.foreign("main"):
-      Math:
-        add(int, int)
-        `+`(Vec2, Vec2)
-        `+`(Vec3, Vec3)
-        `-`(Vec3, Vec3)
-        [get] getPi -> pi
-      Greeter:
-        [init] init(var Greeter, string)
-    wrenVM.ready()
 
