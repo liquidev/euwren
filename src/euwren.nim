@@ -840,6 +840,7 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
     procInit, procDestroy: NimNode = nil
     initProcKind: InitProcKind
     isObject = false
+    isDataClass = false
   for p in procs:
     if p.kind == nnkCommand and p[0].kind == nnkBracket:
       # annotated binding
@@ -870,13 +871,26 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
                                     isObject, true))
       else: error("invalid annotation", p[0][0])
     elif p.kind in {nnkStrLit..nnkTripleStrLit}:
+      # module code injection
       stmts.add(newCall("add", ident"classMethods", p))
+    elif p.kind == nnkPragma:
+      # pragmas
+      for pragma in p:
+        if pragma.kind == nnkIdent:
+          case pragma.strVal
+          of "dataClass":
+            # used for creating dummy classes without constructors
+            isDataClass = true
+          else: error("invalid pragma", pragma)
+        else: error("invalid pragma", pragma)
     else:
       # regular binding
       let (nim, wren) = getAlias(p)
       stmts.add(getAddProcAuxCall(vm, module, class, wrenClass,
                                   nim, wren, isObject))
-  if procInit != nil:
+  if isDataClass:
+    classDecl = "foreign " & classDecl
+  elif procInit != nil:
     stmts.add(getAddClassAuxCall(vm, module, class, wrenClass,
                                  procInit, procDestroy, initProcKind))
     classDecl = "foreign " & classDecl
