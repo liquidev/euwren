@@ -188,6 +188,9 @@ Engine.onTick {
 Binding objects is very similar to procs. All *public* object fields are
 exported to Wren (NYI).
 
+If a proc returns an object, the class for that object must be declared *before*
+the proc is declared.
+
 ```nim
 type
   Foo = object
