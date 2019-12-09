@@ -2,7 +2,7 @@
 # Package
 #--
 
-version       = "0.6.0"
+version       = "0.7.0"
 author        = "liquid600pgm"
 description   = "High-level Wren wrapper"
 license       = "MIT"
