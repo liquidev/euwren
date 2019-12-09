@@ -37,6 +37,7 @@ type
     of wvkNumber: numVal: float
     of wvkString: strVal: string
     of wvkWrenRef: wrenRef: WrenRef
+  ModuleVar = tuple[module, variable: string]
 
   Wren* = ref object
     ## A Wren virtual machine used for executing code.
@@ -191,6 +192,9 @@ proc getSlotTypeString*(vm: RawVM, slot: int): string =
 
 proc newForeign*(vm: RawVM, slot: int, size: Natural, classSlot = 0): pointer =
   result = wrenSetSlotNewForeign(vm, slot.cint, classSlot.cint, size.cuint)
+
+proc getVariable*(vm: RawVM, slot: int, module, variable: string) =
+  wrenGetVariable(vm, module, variable, slot.cint)
 
 proc setSlot*[T](vm: RawVM, slot: int, val: T) =
   when T is bool:
@@ -370,6 +374,8 @@ var
     ## Maps type hashes to unique integer IDs
   typeNames {.compileTime.}: Table[uint16, string]
     ## Maps the unique IDs to actual names
+  wrenNames {.compileTime.}: Table[uint16, ModuleVar]
+    ## Maps the unique IDs to Wren names
   parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
     ## Maps the unique IDs to their parents' IDs
 
@@ -397,6 +403,15 @@ proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
                          ident"vm", newLit(i + ord(isStatic)))
     result.add(getter)
 
+proc isRef(class: NimNode): bool =
+  ## Checks if the given type symbol represents a ref type.
+  if class.typeKind == ntyRef:
+    result = true
+  elif class.typeKind == ntyTypeDesc:
+    let impl = class.getImpl
+    if impl[2].kind == nnkRefTy:
+      result = true
+
 proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
   ## a big chain of conditions which check the type.
@@ -411,7 +426,6 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
     Foreign = {ntyObject, ntyRef}
 
   # there isn't any work to be done if the proc doesn't accept params
-  echo types, isStatic
   if types.len == ord(not (isStatic or isCtor)): return newLit(true)
 
   # generate a list of checks
@@ -425,7 +439,8 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
         elif ty == bindSym"WrenRef": wtUnknown
         elif ty.typeKind in Foreign: wtForeign
         else:
-          error("unsupported type kind", ty)
+          echo "[euwren] type is of an unsupported kind: ", ty.repr
+          error("unsupported type kind: " & $ty.typeKind, ty)
           wtUnknown
       comparison = newTree(nnkInfix, ident"==",
                            newCall("getSlotType", ident"vm", newLit(i + 1)),
@@ -467,6 +482,50 @@ proc genTypeError*(theProc: NimNode, arity: int,
                      newLit(">\nbut expected one of:\n" & expectedStr)))
   result.add(fiberAbort)
 
+proc newCast(T, val: NimNode): NimNode =
+  newTree(nnkCast, T, val)
+
+proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
+                          exprIsInit = false): NimNode =
+  result = newStmtList()
+  # create the foreign object
+  let
+    size = newTree(nnkInfix, ident"+",
+                   newCall("sizeof", ident"uint16"),
+                   newCall("sizeof", objType))
+    dataSym = genSym(nskVar, "data")
+    slotLit = newLit(slot)
+    newForeignCall = newCall("newForeign", vm, slotLit, size, slotLit)
+    u16array = newTree(nnkPtrTy,
+                       newTree(nnkBracketExpr,
+                              ident"UncheckedArray", ident"uint16"))
+  result.add(newVarStmt(dataSym, newCast(u16array, newForeignCall)))
+  # assign the type ID
+  let typeId = getTypeId(objType)
+  result.add(newTree(nnkAsgn,
+                     newTree(nnkBracketExpr, dataSym, newLit(0)),
+                     newLit(typeId)))
+  # assign the data
+  let
+    objSym = genSym(nskVar, "objectData")
+    ptrObjType = newTree(nnkPtrTy, objType)
+    objAddr = newTree(nnkAddr, newTree(nnkBracketExpr, dataSym, newLit(1)))
+    obj = newTree(nnkBracketExpr, objSym)
+  result.add(newVarStmt(objSym, newCast(ptrObjType, objAddr)))
+  if exprIsInit:
+    let
+      initSym = genSym(nskVar, "init")
+      initVar = newTree(nnkVarSection,
+                        newTree(nnkIdentDefs, initSym, objType, newEmptyNode()))
+    result.add(initVar)
+    var initExpr = expr
+    initExpr[0] = initSym
+    result.add(newTree(nnkAsgn, obj, initExpr))
+  else:
+    result.add(newTree(nnkAsgn, obj, expr))
+    if objType.isRef:
+      result.add(newCall("GC_ref", obj))
+
 proc genProcGlue(theProc: NimNode, isGetter, isStatic: bool): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
 
@@ -484,10 +543,27 @@ proc genProcGlue(theProc: NimNode, isGetter, isStatic: bool): NimNode =
   let
     call = newCall(theProc, getSlotGetters(procParams, isStatic))
     callWithReturn =
+      # no return type
       if procRetType.kind == nnkEmpty or eqIdent(procRetType, "void"): call
+      # some return type
       else:
-        newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
-                ident"vm", newLit(0), call)
+        # object return type
+        if (procRetType.typeKind == ntyObject or procRetType.isRef) and
+           procRetType != bindSym"WrenRef":
+          let retTypeId = getTypeId(procRetType)
+          var stmts = newStmtList()
+          if retTypeId notin wrenNames:
+            error("[euwren] return type unknown to the VM, " &
+                  "register a {.dataClass.}", procRetType)
+          let varInfo = wrenNames[retTypeId]
+          stmts.add(newCall("getVariable", ident"vm", newLit(0),
+                            newLit(varInfo.module), newLit(varInfo.variable)))
+          stmts.add(genForeignObjectInit(ident"vm", procRetType, call, 0))
+          stmts
+        # primitive return type
+        else:
+          newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
+                  ident"vm", newLit(0), call)
   # generate type check
   let typeCheck = genTypeCheck(procParams, isStatic, isCtor = false)
   body.add(newIfStmt((cond: typeCheck, body: callWithReturn))
@@ -536,6 +612,7 @@ proc genSignature(theProc: NimNode, wrenName: string,
 proc resolveOverload(procSym: NimNode, overloaded: bool,
                      params: varargs[NimNode]): NimNode =
   result = procSym
+  if procSym == nil: return
   if procSym.kind != nnkSym:
     if not overloaded:
       error("multiple overloads available; " &
@@ -549,6 +626,11 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
   ## Generates code which binds a procedure to the provided Wren instance.
   ## This is an implementation detail and you should not use it in your code.
 
+  # as a workaround for Nim/#12831, unwrap the procSym if it's
+  # in an nnkTypeOfExpr
+  var procSym = procSym
+  if procSym.kind == nnkTypeOfExpr:
+    procSym = procSym[0]
   # find the correct overload of the procedure, if applicable
   var theProc = resolveOverload(procSym, overloaded, params)
   # get some metadata about the proc
@@ -575,20 +657,9 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
 
 type
   InitProcKind = enum
+    ipNone
     ipInit
     ipNew
-
-proc newCast(T, val: NimNode): NimNode =
-  newTree(nnkCast, T, val)
-
-proc isRef(class: NimNode): bool =
-  ## Checks if the given type symbol represents a ref type.
-  if class.typeKind == ntyRef:
-    result = true
-  elif class.typeKind == ntyTypeDesc:
-    let impl = class.getImpl
-    if impl[2].kind == nnkRefTy:
-      result = true
 
 proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
   ## Generates a glue init procedure with checks and type conversions.
@@ -600,8 +671,9 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
     procRetType = procImpl[3][0]
   # do some extra checks to see if the passed proc is usable
   if kind == ipInit:
-    if procParams[0] != newTree(nnkVarTy, class):
-      error("first parameter of [init] proc must be var[class]", theProc)
+    if procParams[0] != newTree(nnkVarTy, class) and
+       not procParams[0].isRef:
+      error("first parameter of [init] proc must be var or ref", theProc)
     if not (procRetType.kind == nnkEmpty or procRetType == bindSym"void"):
       error("return type for [init] proc must be void", theProc)
   # create the resulting init proc
@@ -638,10 +710,10 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
     if kind == ipInit: procParams[1..^1]
     else: procParams
   let typeCheck = genTypeCheck(initParams, isStatic = false, isCtor = true)
-  echo typeCheck.repr, ' ', initParams
   # finally, initialize or construct the object
   var initBody = newStmtList()
   case kind
+  of ipNone: discard
   of ipInit:
     # initializer
     initBody.add(newCall("reset", newCast(newTree(nnkVarTy, class),
@@ -722,17 +794,23 @@ macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
   # generate all the glue procs
   let
     initOverload = resolveOverload(initProc, initOverloaded, initParams)
-    initGlue = genInitGlue(vm, class, initOverload, initProcKind)
+    initGlue =
+      if initProc == nil: newNilLit()
+      else: genInitGlue(vm, class, initOverload, initProcKind)
     destroyGlue = genDestroyGlue(vm, class, destroyProc)
   result = newStmtList()
   result.add(newCall("addClass", vm, module, wrenClass,
                      initGlue, destroyGlue))
-  let ctorDecl = "construct " &
-                 genSignature(initOverload, "new",
-                              isStatic = true, isGetter = false,
-                              namedParams = true) &
-                 " {}\n"
-  result.add(newCall("add", ident"classMethods", newLit(ctorDecl)))
+  if initProc != nil:
+    # generate the Wren glue code
+    let ctorDecl = "construct " &
+                   genSignature(initOverload, "new",
+                                isStatic = true, isGetter = false,
+                                namedParams = true) &
+                   " {}\n"
+    result.add(newCall("add", ident"classMethods", newLit(ctorDecl)))
+  # save the Wren type name
+  wrenNames[getTypeId(class)] = (module.strVal, wrenClass.strVal)
 
 proc getOverloadParams(def: NimNode): seq[NimNode] =
   ## Returns the overload's parameters as a raw seq.
@@ -749,17 +827,18 @@ proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
       if isObject: class
       else: newNilLit()
   # non-overloaded proc binding
-  if theProc.kind == nnkIdent:
+  if theProc.kind in {nnkIdent, nnkAccQuoted}:
     # defer the binding to addProcAux
     # XXX: find a way which doesn't require addProcAux to be public
     result = newCall(ident"addProcAux", vm, module,
                      classSym, newLit(wrenClass),
-                     theProc, newLit(wrenName),
+                     newCall("typeof", theProc), newLit(wrenName),
                      newLit(false), newLit(isGetter))
   # overloaded/getter proc binding
   elif theProc.kind in {nnkCall, nnkCommand}:
     var callArgs = @[vm, module, classSym, newLit(wrenClass),
-                     theProc[0], newLit(wrenName), newLit(true)]
+                     newCall("typeof", theProc[0]), newLit(wrenName),
+                     newLit(true)]
     if isGetter:
       # bind a getter
       callArgs[3] = theProc[1]
@@ -773,8 +852,8 @@ proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
 proc getAddClassAuxCall(vm, module, class: NimNode, wrenClass: string,
                         initProc, destroyProc: NimNode,
                         initProcKind: InitProcKind): NimNode =
-  # non-overloaded init proc
-  if initProc.kind == nnkIdent:
+  # non-overloaded or nil init proc
+  if initProc == nil or initProc.kind == nnkIdent:
     result = newCall(ident"addClassAux", vm, module, class, newLit(wrenClass),
                      initProc, destroyProc, newLit(initProcKind), newLit(false))
   # overloaded init proc
@@ -820,7 +899,6 @@ proc getClassAlias(decl: NimNode): tuple[class, procs: NimNode, wren: string] =
   elif decl.kind == nnkCall:
     result = (class: decl[0], procs: decl[1], wren: decl[0].repr)
   else:
-    echo decl.treeRepr
     error("invalid binding", decl)
 
 proc genClassBinding(vm, module, decl: NimNode): NimNode =
@@ -838,9 +916,8 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
   # will be bound to a namespace
   var
     procInit, procDestroy: NimNode = nil
-    initProcKind: InitProcKind
+    initProcKind = ipNone
     isObject = false
-    isDataClass = false
   for p in procs:
     if p.kind == nnkCommand and p[0].kind == nnkBracket:
       # annotated binding
@@ -862,8 +939,6 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         initProcKind = ipNew
         isObject = true
       of "destroy":
-        if procInit == nil:
-          error("[destroy] may only be used in object-binding classes", p)
         procDestroy = p[1]
       of "get":
         let (nim, wren) = getAlias(p[1])
@@ -879,18 +954,17 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         if pragma.kind == nnkIdent:
           case pragma.strVal
           of "dataClass":
-            # used for creating dummy classes without constructors
-            isDataClass = true
-          else: error("invalid pragma", pragma)
-        else: error("invalid pragma", pragma)
+            # make the class a 'data class' (an object without a constructor)
+            isObject = true
+            stmts.add(getAddClassAuxCall(vm, module, class, wrenClass,
+                                         procInit, procDestroy, initProcKind))
+    elif p.kind == nnkDiscardStmt: discard # discard statement
     else:
       # regular binding
       let (nim, wren) = getAlias(p)
       stmts.add(getAddProcAuxCall(vm, module, class, wrenClass,
                                   nim, wren, isObject))
-  if isDataClass:
-    classDecl = "foreign " & classDecl
-  elif procInit != nil:
+  if procInit != nil:
     stmts.add(getAddClassAuxCall(vm, module, class, wrenClass,
                                  procInit, procDestroy, initProcKind))
     classDecl = "foreign " & classDecl
@@ -948,9 +1022,9 @@ macro foreign*(vm: Wren, module: string, body: untyped): untyped =
     else:
       # any other bindings are invalid
       error("invalid foreign binding", decl)
-  stmts.add(newCall("module", vm, module, ident"modSrc"))
   when defined(euwrenDumpForeignModule):
     stmts.add(newCall("echo", ident"modSrc"))
+  stmts.add(newCall("module", vm, module, ident"modSrc"))
   result = newBlockStmt(stmts)
 
 macro ready*(vm: Wren): untyped =

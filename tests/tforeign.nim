@@ -9,6 +9,8 @@ proc pi: float = 3.14159265
 type
   Greeter = object
     target: string
+  Vec2f = object
+    x, y: float
 
 proc init(greeter: var Greeter, target: string) =
   greeter.target = target
@@ -18,14 +20,26 @@ proc initGreeter(target: string): Greeter =
   result = Greeter()
   result.init(target)
 
+proc vec2f(x, y: float): Vec2f = Vec2f(x: x, y: y)
+proc `$`(vec: Vec2f): string = "[" & $vec.x & ", " & $vec.y & "]"
+proc `+`(a, b: Vec2f): Vec2f = Vec2f(x: a.x + b.x, y: a.y + b.y)
+
 proc getGreeting(greeter: Greeter): string =
   result = "Hello, " & greeter.target
 
 var wren = newWren()
-wren.foreign("math"):
-  Math:
-    add(int, int)
-    [get] pi
+
+expandMacros:
+  wren.foreign("math"):
+    Math:
+      add(int, int)
+      [get] pi
+    Vec2f:
+      {.dataClass.}
+      `$`(Vec2f) -> toString
+      `+`(Vec2f, Vec2f)
+    Vec:
+      vec2f -> new2D
 
 expandMacros:
   wren.foreign("greet"):
@@ -37,6 +51,7 @@ expandMacros:
           System.print(greeting)
         }
       """
+wren.ready()
 
 wren.run("""
 import "greet" for Greeter
