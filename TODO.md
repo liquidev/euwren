@@ -8,10 +8,11 @@
     - [ ] Aborting fibers on exceptions in foreign procs
   - [x] Objects
     - [ ] Automatic public field binding
-  - [ ] Enums
+  - [x] Enums
   - [x] Symbol aliasing
   - [x] Automatic Wren module generation
-- [ ] Type checking
+- [x] Type checking
   - [x] Inheritance
   - [ ] Generics?
     Don't know if it's possible, but it's worth giving a shot.
+
