@@ -851,6 +851,9 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
   while ty.kind == nnkRefTy:
     ty = ty[0]
   if ty.kind != nnkObjectTy: return
+  let parent = getParent(ty)
+  if parent != nil:
+    result.add(genFieldGlue(vm, parent, module, wrenClass))
   for rec in ty[2]:
     # fields
     if rec.kind == nnkIdentDefs:
