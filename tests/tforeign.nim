@@ -10,7 +10,7 @@ type
   Greeter = object
     target: string
   Vec2f = object
-    x, y: float
+    x*, y*: float
 
 proc init(greeter: var Greeter, target: string) =
   greeter.target = target
@@ -36,12 +36,10 @@ expandMacros:
       [get] pi
     Vec2f:
       {.dataClass.}
-      `$`(Vec2f) -> toString
+      [get] `$` -> toString
       `+`(Vec2f, Vec2f)
     Vec:
-      vec2f -> new2D
-
-expandMacros:
+      vec2f -> new
   wren.foreign("greet"):
     Greeter:
       [new] initGreeter
@@ -51,9 +49,18 @@ expandMacros:
           System.print(greeting)
         }
       """
-wren.ready()
+  wren.ready()
 
-wren.run("""
+wren.module("testMath", """
+import "math" for Math, Vec
+
+var a = Vec.new(10, 20)
+var b = Vec.new(30, 40)
+
+System.print(a)
+""")
+
+wren.module("testGreet", """
 import "greet" for Greeter
 
 var greeter = Greeter.new("world")

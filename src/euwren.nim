@@ -177,6 +177,10 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
   else:
     {.error: "unsupported type for slot retrieval".}
 
+proc getSlotForeign*[T](vm: RawVM, slot: int): ptr T =
+  let raw = cast[ptr UncheckedArray[uint16]](wrenGetSlotForeign(vm, slot.cint))
+  result = cast[ptr T](raw[1].unsafeAddr)
+
 proc getSlotType*(vm: RawVM, slot: int): WrenType =
   result = wrenGetSlotType(vm, slot.cint).WrenType
 
@@ -395,14 +399,6 @@ proc getTypeId(typeSym: NimNode): uint16 =
       parentTypeIds[id] = parentTypeIds[parentId] + {parentId}
   result = typeIds[hash]
 
-proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
-  ## Get a list of getSlot() calls which extract the given parameters from
-  ## the VM.
-  for i, paramType in params:
-    let getter = newCall(newTree(nnkBracketExpr, ident"getSlot", paramType),
-                         ident"vm", newLit(i + ord(isStatic)))
-    result.add(getter)
-
 proc isRef(class: NimNode): bool =
   ## Checks if the given type symbol represents a ref type.
   if class.typeKind == ntyRef:
@@ -411,6 +407,32 @@ proc isRef(class: NimNode): bool =
     let impl = class.getImpl
     if impl[2].kind == nnkRefTy:
       result = true
+
+proc newCast(T, val: NimNode): NimNode =
+  newTree(nnkCast, T, val)
+
+proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
+  ## Get a list of getSlot() calls which extract the given parameters from
+  ## the VM.
+  for i, paramType in params:
+    let
+      slot = newLit(i + ord(isStatic))
+      getter =
+        if paramType.typeKind in {ntyObject, ntyVar} or paramType.isRef:
+          if paramType.typeKind == ntyVar:
+            newCast(paramType,
+                    newCall(newTree(nnkBracketExpr, ident"getSlotForeign",
+                                    paramType[0]),
+                            ident"vm", slot))
+          else:
+            newTree(nnkBracketExpr,
+                    newCall(newTree(nnkBracketExpr, ident"getSlotForeign",
+                                    paramType),
+                            ident"vm", slot))
+        else:
+          newCall(newTree(nnkBracketExpr, ident"getSlot", paramType),
+                  ident"vm", slot)
+    result.add(getter)
 
 proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
@@ -427,6 +449,11 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
 
   # there isn't any work to be done if the proc doesn't accept params
   if types.len == ord(not (isStatic or isCtor)): return newLit(true)
+
+  # if the first param is var, ignore that
+  var types: seq[NimNode] = @types
+  if types[0].kind == nnkVarTy:
+    types[0] = types[0][0]
 
   # generate a list of checks
   var checks: seq[NimNode]
@@ -481,9 +508,6 @@ proc genTypeError*(theProc: NimNode, arity: int,
   result.add(newCall("add", ident"err",
                      newLit(">\nbut expected one of:\n" & expectedStr)))
   result.add(fiberAbort)
-
-proc newCast(T, val: NimNode): NimNode =
-  newTree(nnkCast, T, val)
 
 proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
                           exprIsInit = false): NimNode =
@@ -640,7 +664,10 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
   # generate glue and register the procedure in the Wren instance
   let
     classLit = className
-    isStatic = procParams.len < 1 or procParams[0] != classSym
+    firstParam =
+      if classSym.isRef: @[classSym]
+      else: @[classSym, newTree(nnkVarTy, classSym)]
+    isStatic = procParams.len < 1 or procParams[0] notin firstParam
     isStaticLit = newLit(isStatic)
     nameLit = newLit(genSignature(theProc, wrenName, isStatic, isGetter))
   result = newStmtList()
@@ -783,6 +810,53 @@ proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
   else:
     result = newNilLit()
 
+proc genFieldGetter(name, ty, field, fieldTy: NimNode): NimNode =
+  result = newProc(name, params = [fieldTy])
+  result.params.add(newTree(nnkIdentDefs, ident"x", ty, newEmptyNode()))
+  result.body.add(newTree(nnkAsgn, ident"result",
+                          newTree(nnkDotExpr, ident"x", field)))
+
+proc genFieldSetter(name, ty, field, fieldTy: NimNode): NimNode =
+  result = newProc(name)
+  let paramTy =
+    if ty.isRef: ty
+    else: newTree(nnkVarTy, ty)
+  result.params.add(newTree(nnkIdentDefs, ident"x", paramTy, newEmptyNode()))
+  result.params.add(newTree(nnkIdentDefs, ident"val", fieldTy, newEmptyNode()))
+  result.body.add(newTree(nnkAsgn, newTree(nnkDotExpr, ident"x", field),
+                          ident"val"))
+
+proc genGetSet(vm, class, module, identDefs: NimNode, wrenClass: string): NimNode =
+  result = newStmtList()
+  for def in identDefs[0..^3]:
+    if def.kind == nnkPostfix and def[0].strVal == "*":
+      let
+        getSym = genSym(nskProc, "objGet")
+        setSym = genSym(nskProc, "objSet")
+        getProc = genFieldGetter(getSym, class, def[1], identDefs[^2])
+        setProc = genFieldSetter(setSym, class, def[1], identDefs[^2])
+      result.add([getProc, setProc])
+      result.add(newCall("addProcAux", vm, module, class, newLit(wrenClass),
+                         getSym, newLit(def[1].strVal),
+                         newLit(false), newLit(true)))
+      result.add(newCall("addProcAux", vm, module, class, newLit(wrenClass),
+                         setSym, newLit(def[1].strVal & '='),
+                         newLit(false), newLit(false)))
+
+proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
+  ## Generates code which binds the given object's fields to the VM, by
+  ## generating glue procedures that get or set the fields.
+  result = newStmtList()
+  var ty = class.getImpl[2]
+  while ty.kind == nnkRefTy:
+    ty = ty[0]
+  if ty.kind != nnkObjectTy: return
+  for rec in ty[2]:
+    # fields
+    if rec.kind == nnkIdentDefs:
+      result.add(genGetSet(vm, class, module, rec, wrenClass))
+    elif rec.kind == nnkRecCase: discard # TODO
+
 macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
                    initProc, destroyProc: typed,
                    initProcKind: static InitProcKind,
@@ -799,6 +873,7 @@ macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
       else: genInitGlue(vm, class, initOverload, initProcKind)
     destroyGlue = genDestroyGlue(vm, class, destroyProc)
   result = newStmtList()
+  result.add(genFieldGlue(vm, class, module, wrenClass.strVal))
   result.add(newCall("addClass", vm, module, wrenClass,
                      initGlue, destroyGlue))
   if initProc != nil:
@@ -834,19 +909,16 @@ proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
                      classSym, newLit(wrenClass),
                      newCall("typeof", theProc), newLit(wrenName),
                      newLit(false), newLit(isGetter))
+    if isGetter:
+      result[7] = newLit(true) # mark as overloaded
+      result.add(classSym)
   # overloaded/getter proc binding
   elif theProc.kind in {nnkCall, nnkCommand}:
     var callArgs = @[vm, module, classSym, newLit(wrenClass),
                      newCall("typeof", theProc[0]), newLit(wrenName),
-                     newLit(true)]
-    if isGetter:
-      # bind a getter
-      callArgs[3] = theProc[1]
-      callArgs.add([newLit(true), class])
-    else:
-      # bind the overloaded proc
-      callArgs.add(newLit(false))
-      callArgs.add(getOverloadParams(theProc))
+                     newLit(true), newLit(isGetter)]
+    # bind the overloaded proc
+    callArgs.add(getOverloadParams(theProc))
     result = newCall(ident"addProcAux", callArgs)
 
 proc getAddClassAuxCall(vm, module, class: NimNode, wrenClass: string,
@@ -943,7 +1015,7 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
       of "get":
         let (nim, wren) = getAlias(p[1])
         stmts.add(getAddProcAuxCall(vm, module, class, wrenClass, nim, wren,
-                                    isObject, true))
+                                    isObject, isGetter = true))
       else: error("invalid annotation", p[0][0])
     elif p.kind in {nnkStrLit..nnkTripleStrLit}:
       # module code injection
