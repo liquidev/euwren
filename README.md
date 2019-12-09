@@ -223,7 +223,7 @@ wren.ready()
 ```js
 import "foo" for Bar
 
-var foo = Bar.new()
+var foo = Bar.new("Thing")
 foo.more()
 System.print(foo.count)
 ```
