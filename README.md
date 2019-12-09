@@ -129,7 +129,7 @@ wren.foreign("nim"):
 # checking. no calls to foreign() should be done after you call this!
 wren.ready()
 ```
-```d
+```js
 import "nim" for Nim
 Nim.hello() // Output: Hello from Nim!
 ```
@@ -151,7 +151,7 @@ wren.foreign("math"):
     subtract -> sub
 wren.ready()
 ```
-```d
+```js
 import "math" for Math
 System.print(Math.add(2, 2)) // Output: 4
 ```
@@ -176,7 +176,7 @@ wren.run(code)
 let methodCall0 = wren{"call()"}
 wren.call(methodCall0, onTickFn)
 ```
-```d
+```js
 import "engine" for Engine
 Engine.onTick {
   System.println("Hello from callback!")
@@ -217,12 +217,43 @@ wren.foreign("foo"):
     [get] count
 wren.ready()
 ```
-```d
+```js
 import "foo" for Bar
 
 var foo = Bar.new()
 foo.more()
 System.print(foo.count)
+```
+
+If an object stores some foreign data, but does not have a constructor, the
+`{.dataClass.}` pragma must be used.
+
+```nim
+type
+  Vec2 = object
+    x*, y*: float
+
+proc `$`(v: Vec2): string = "(" & $v.x & ", " & $v.y & ")"
+proc `+`(a, b: Vec2): Vec2 = Vec2(x: a.x + b.x, y: a.y + b.y)
+
+proc vec2(x, y: float): Vec2 = Vec2(x: x, y: y)
+
+wren.foreign("vec"):
+  Vec2:
+    {.dataClass.}
+    `$`(Vec2) -> toString # methods can still be declared normally
+    `+`(Vec2, Vec2)
+  Vec:
+    vec2 -> new
+```
+```js
+import "vec" for Vec
+
+var a = Vec.new(10, 20)
+var b = Vec.new(20, 30)
+var c = a + b
+
+System.print(c)
 ```
 
 ### Binding enums
@@ -253,7 +284,7 @@ wren.foreign("enums"):
   # given enums. this also means we don't need to provide a module() block here
 wren.ready()
 ```
-```d
+```js
 class Fruit {
   static fruitApple { 0 }
   static fruitBanana { 1 }
@@ -270,7 +301,7 @@ class Lang {
   static C { 2 }
 }
 ```
-```d
+```js
 import "enums" for Fruit, MenuOpt, Lang
 
 System.print(Fruit.fruitGrape) // 2
