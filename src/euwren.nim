@@ -855,7 +855,12 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
     # fields
     if rec.kind == nnkIdentDefs:
       result.add(genGetSet(vm, class, module, rec, wrenClass))
-    elif rec.kind == nnkRecCase: discard # TODO
+    elif rec.kind == nnkRecCase:
+      for branch in rec:
+        if branch.kind == nnkIdentDefs:
+          result.add(genGetSet(vm, class, module, branch, wrenClass))
+        elif branch.kind == nnkOfBranch:
+          result.add(genGetSet(vm, class, module, branch[1], wrenClass))
 
 macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
                    initProc, destroyProc: typed,
