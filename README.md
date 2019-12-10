@@ -285,21 +285,34 @@ wren.foreign("enums"):
   ProgLanguage - lang -> Lang
 wren.ready()
 ```
+The generated class includes all the values of an enum, and additionally,
+`low` and `high` for utility purposes. This also means that you should refrain
+from naming your enums in `snake_case`, as your names may clash with the
+built-in `low` and `high` properties. An option may be added in the future to
+automatically convert your enum to `PascalCase`.
+
+Here's an example of a generated module, based on the above input:
 ```js
 class Fruit {
   static fruitApple { 0 }
   static fruitBanana { 1 }
   static fruitGrape { 2 }
+  static low { 0 }
+  static high { 2 }
 }
 class MenuOpt {
   static Start { 0 }
   static Help { 1 }
   static Exit { 2 }
+  static low { 0 }
+  static high { 2 }
 }
 class Lang {
   static Nim { 0 }
   static Wren { 1 }
   static C { 2 }
+  static low { 0 }
+  static high { 2 }
 }
 ```
 ```js
@@ -316,11 +329,11 @@ System.print(Lang.Wren) // 1
 
 ### Gotchas
 
-- A couple of extra macros called `addProcAux` and `addClassAux` is exposed in
-  the public API. **Do not use them in your code.** They are used internally by
-  `foreign()`, and they make the DSL possible by deferring all binding to the
-  semantic pass. There are lots of implementation details here, feel free to
-  read the source code if you're interested.
+- Three extra macros called `addProcAux`, `addClassAux`, and `genEnumAux` are
+  exposed in the public API. **Do not use them in your code.** They are used
+  internally by `foreign()`, and they make the DSL possible by deferring all
+  binding to the semantic phase. There are lots of implementation details here,
+  feel free to read the source code if you're interested.
 - Currently, euwren uses a fork of Wren that fixes an issue related to slots
   in the VM. This fork is not the same as the current stable version of Wren,
   but it will be used until [Wren/#712](https://github.com/wren-lang/wren/pull/712)

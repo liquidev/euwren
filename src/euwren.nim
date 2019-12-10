@@ -371,6 +371,7 @@ proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
         formalParams = impl[3]
         argTypes = getParamList(formalParams)
       # compare ``argTypes`` with ``params``
+      if params[0].len != argTypes.len: break check
       for i, param in params[0]:
         if argTypes[i] != param:
           break check
@@ -507,6 +508,10 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic: bool): NimNode =
 proc getWrenName(typeSym: NimNode): string =
   if typeSym.typeKind in {ntyInt..ntyUint64}: result = "number"
   elif typeSym == bindSym"WrenRef": result = "object"
+  elif typeSym.typeKind in {ntyObject, ntyRef} and
+       getTypeId(typeSym) in wrenNames:
+    let id = getTypeId(typeSym)
+    result = wrenNames[id].variable
   else: result = typeSym.repr
 
 proc genTypeError(theProc: NimNode, wrenName: string, arity: int,
@@ -1090,29 +1095,66 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
   stmts.add(newCall("add", ident"modSrc", newLit("}\n")))
   result = newBlockStmt(stmts)
 
-template bindEnumAux(theEnum, wrenName, prefix) =
-  var decl = "class " & wrenName & " {\n"
-  for x in low(theEnum)..high(theEnum):
-    let ordVal = ord(x)
-    var strVal = ($x)[prefix.len..^1]
-    decl.add("static " & strVal & " { " & $ordVal & " }\n")
-  decl.add("}\n")
-  modSrc.add(decl)
+macro genEnumAux*(theEnum: typed, wrenName, prefix: string): untyped =
+  result = newStmtList()
+  let
+    impl = theEnum.getImpl[2]
+    classDecl = "class " & wrenName.strVal & " {\n"
+  var
+    i = -1
+    enumFields = ""
+  for field in impl[1..^1]:
+    var name = ""
+    if field.kind == nnkIdent:
+      name = field.repr
+      inc(i)
+    elif field.kind == nnkEnumFieldDef:
+      name = field[0].repr
+      if field[1].kind == nnkIntLit:
+        i = field[1].intVal.int
+      elif field[1].kind == nnkTupleConstr:
+        i = field[1][0].intVal.int
+      else:
+        inc(i)
+    name.removePrefix(prefix.strVal)
+    enumFields.add("static " & name & " { " & $i & " }\n")
+  result.add(newCall("add", ident"modSrc", newLit(classDecl)))
+  result.add(newCall("add", ident"modSrc", newLit(enumFields)))
+
+  template propertyField(property: string) =
+    result.add(newCall("add", ident"modSrc",
+                       newLit("static " & property & " { ")))
+    result.add(newCall("add", ident"modSrc",
+                       newTree(nnkPrefix, ident"$",
+                               newCall("ord", newCall(property, theEnum)))))
+    result.add(newCall("add", ident"modSrc", newLit(" }\n")))
+  propertyField("low")
+  propertyField("high")
+
+  result.add(newCall("add", ident"modSrc", newLit("}\n")))
+
+proc getGenEnumAuxCall(theEnum: NimNode, wrenName, prefix: string): NimNode =
+  result = newCall("genEnumAux", theEnum, newLit(wrenName), newLit(prefix))
 
 proc genEnumBinding(decl: NimNode): NimNode =
   if decl.kind == nnkIdent:
-    result = getAst(bindEnumAux(decl, decl.repr, ""))
+    result = getGenEnumAuxCall(decl, decl.repr, "")
   elif decl.kind == nnkInfix:
     case decl[0].strVal
     of "-":
       decl[1].expectKind(nnkIdent)
       decl[2].expectKind(nnkIdent)
-      result = getAst(bindEnumAux(decl[1], decl[1].repr, decl[2].strVal))
+      result = getGenEnumAuxCall(decl[1], decl[1].repr, decl[2].strVal)
     of "->":
       let (nim, wren) = getAlias(decl)
-      nim[1].expectKind(nnkIdent)
-      nim[2].expectKind(nnkIdent)
-      result = getAst(bindEnumAux(nim[1], wren, nim[2].strVal))
+      if nim.kind == nnkIdent:
+        result = getGenEnumAuxCall(nim, wren, "")
+      elif nim.kind == nnkInfix:
+        nim[1].expectKind(nnkIdent)
+        nim[2].expectKind(nnkIdent)
+        result = getGenEnumAuxCall(nim[1], wren, nim[2].strVal)
+      else:
+        error("invalid enum declaration", nim)
     else: error("invalid enum declaration operator", decl[0])
 
 macro foreign*(vm: Wren, module: string, body: untyped): untyped =
@@ -1129,8 +1171,11 @@ macro foreign*(vm: Wren, module: string, body: untyped): untyped =
       # class bindings
       stmts.add(genClassBinding(vm, module, decl))
     of nnkIdent, nnkInfix:
-      # enums
-      stmts.add(genEnumBinding(decl))
+      # enums or aliased objects
+      if decl.kind == nnkInfix and decl[^1].kind == nnkStmtList:
+        stmts.add(genClassBinding(vm, module, decl))
+      else:
+        stmts.add(genEnumBinding(decl))
     of nnkStrLit..nnkTripleStrLit:
       # module code injections
       stmts.add(newCall("add", ident"modSrc", decl))
