@@ -283,8 +283,6 @@ wren.foreign("enums"):
   MenuOpt - opt
   # enums can also be aliased
   ProgLanguage - lang -> Lang
-  # if a foreign() block contains an enum, the module is prepended with the
-  # given enums. this also means we don't need to provide a module() block here
 wren.ready()
 ```
 ```js
