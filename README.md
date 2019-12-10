@@ -103,9 +103,9 @@ method, use `call()`.
 # this convention is the preferred naming conventions for variables and fields
 # that store Wren call handles, but you're free to use any convention you want
 let methodRun0 = wren{"run()"}
-# the second parameter is the call handle to the method, the rest of parameters
-# are the arguments
-# the first argument is always the receiver of the method
+# the second parameter is the call handle to the method, the third is the
+# receiver of the method, and the rest is the parameters to pass to
+# the method.
 # when the method is static, the receiver is the class of the method
 wren.call(methodRun0, classProgram)
 ```

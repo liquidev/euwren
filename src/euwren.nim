@@ -42,6 +42,7 @@ type
   Wren* = ref object
     ## A Wren virtual machine used for executing code.
     handle: RawVM
+    procWrite: proc (str: string)
 
     methods: Table[MethodSign, WrenForeignMethodFn]
     classes: Table[ClassSign, WrenForeignClassMethods]
@@ -85,7 +86,7 @@ proc newWren*(): Wren =
   wrenInitConfiguration(addr config)
   # debugging
   config.writeFn = proc (vm: RawVM, text: cstring) {.cdecl.} =
-    stdout.write(text)
+    cast[Wren](wrenGetUserData(vm)).procWrite($text)
   config.errorFn = proc (vm: RawVM, ty: WrenErrorType, module: cstring,
                          line: cint, msg: cstring) {.cdecl.} =
     var wvm = cast[Wren](wrenGetUserData(vm))
@@ -132,7 +133,17 @@ proc newWren*(): Wren =
 
   result.handle = wrenNewVM(addr config)
   wrenSetUserData(result.handle, cast[pointer](result))
+
+  result.procWrite = proc (str: string) =
+    stdout.write(str)
+
   result.rtError = WrenError(kind: weRuntime)
+
+proc onWrite*(vm: Wren, callback: proc (str: string)) =
+  ## Sets the write callback for the VM. This callback is called when the Wren
+  ## VM wants to print something out to the console. The default callback simply
+  ## writes to stdout.
+  vm.procWrite = callback
 
 #--
 # Low-level APIs
@@ -246,7 +257,7 @@ proc addClass*(vm: Wren, module, name: string,
 # End user API - basics
 #--
 
-proc getError*(vm: Wren, interpretResult: WrenInterpretResult): ref WrenError =
+proc getError(vm: Wren, interpretResult: WrenInterpretResult): ref WrenError =
   case interpretResult
   of WREN_RESULT_SUCCESS: discard
   of WREN_RESULT_COMPILE_ERROR:
@@ -306,18 +317,21 @@ proc `{}`*(vm: Wren, signature: string): WrenRef =
 
 converter toWrenValue*(val: bool): WrenValue =
   WrenValue(kind: wvkBool, boolVal: val)
-converter toWrenValue*(val: SomeNumber): WrenValue =
+converter toWrenValue*(val: int): WrenValue =
   WrenValue(kind: wvkNumber, numVal: val.float)
+converter toWrenValue*(val: float): WrenValue =
+  WrenValue(kind: wvkNumber, numVal: val)
 converter toWrenValue*(val: string): WrenValue =
   WrenValue(kind: wvkString, strVal: val)
 converter toWrenValue*(val: WrenRef): WrenValue =
   WrenValue(kind: wvkWrenRef, wrenRef: val)
 
-proc call*(vm: Wren, theMethod: WrenRef,
-           receiver: WrenRef, args: varargs[WrenValue]) =
+proc call*[T](vm: Wren, theMethod: WrenRef,
+              receiver: WrenRef, args: varargs[WrenValue]): T =
   ## Calls the given method with the given arguments. The first argument must
   ## always be present, and is the receiver of the method. The rest of the
-  ## arguments is optional.
+  ## arguments is optional. The generic parameter decides on the return type of
+  ## the method (which can be void).
   wrenEnsureSlots(vm.handle, cint(1 + args.len))
   vm.handle.setSlot[:WrenRef](0, receiver)
   for i, arg in args:
@@ -327,6 +341,8 @@ proc call*(vm: Wren, theMethod: WrenRef,
     of wvkString: vm.handle.setSlot[:string](i + 1, arg.strVal)
     of wvkWrenRef: vm.handle.setSlot[:WrenRef](i + 1, arg.wrenRef)
   vm.checkRuntimeError(wrenCall(vm.handle, theMethod.handle))
+  when T isnot void:
+    result = vm.handle.getSlot[:T](0)
 
 #--
 # End user API - foreign()
@@ -434,7 +450,7 @@ proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
                   ident"vm", slot)
     result.add(getter)
 
-proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
+proc genTypeCheck*(types: varargs[NimNode], isStatic: bool): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
   ## a big chain of conditions which check the type.
   ## This is a much better way of checking types compared to the 0.1.0
@@ -448,7 +464,7 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
     Foreign = {ntyObject, ntyRef}
 
   # there isn't any work to be done if the proc doesn't accept params
-  if types.len == ord(not (isStatic or isCtor)): return newLit(true)
+  if types.len == ord(not isStatic): return newLit(true)
 
   # if the first param is var, ignore that
   var types: seq[NimNode] = @types
@@ -457,8 +473,9 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
 
   # generate a list of checks
   var checks: seq[NimNode]
-  for i, ty in types:
+  for i, ty in types[ord(not isStatic)..^1]:
     let
+      slot = i + 1
       wrenType =
         if ty.typeKind == ntyBool: wtBool
         elif ty.typeKind in Nums or ty.typeKind == ntyEnum: wtNumber
@@ -470,14 +487,14 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
           error("unsupported type kind: " & $ty.typeKind, ty)
           wtUnknown
       comparison = newTree(nnkInfix, ident"==",
-                           newCall("getSlotType", ident"vm", newLit(i + 1)),
+                           newCall("getSlotType", ident"vm", newLit(slot)),
                            newLit(wrenType))
     checks.add(comparison)
     if wrenType == wtForeign:
       let
         typeId = getTypeId(ty)
         typeIdLit = newLit(typeId)
-        slotId = newCall("getSlotForeignId", ident"vm", newLit(i + 1))
+        slotId = newCall("getSlotForeignId", ident"vm", newLit(slot))
         idCheck = newTree(nnkInfix, ident"==", slotId, typeIdLit)
         parentCheck = newCall(ident"checkParent", ident"vm", typeIdLit, slotId)
       checks.add(newPar(newTree(nnkInfix, ident"or", idCheck, parentCheck)))
@@ -487,8 +504,13 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic, isCtor: bool): NimNode =
   for i in countdown(checks.len - 2, 0):
     result = newTree(nnkInfix, ident"and", checks[i], result)
 
-proc genTypeError*(theProc: NimNode, arity: int,
-                   overloads: varargs[NimNode]): NimNode =
+proc getWrenName(typeSym: NimNode): string =
+  if typeSym.typeKind in {ntyInt..ntyUint64}: result = "number"
+  elif typeSym == bindSym"WrenRef": result = "object"
+  else: result = typeSym.repr
+
+proc genTypeError(theProc: NimNode, wrenName: string, arity: int,
+                  overloads: varargs[NimNode]): NimNode =
   ## Generate a Nim-like type mismatch error.
   result = newStmtList()
   let
@@ -503,8 +525,19 @@ proc genTypeError*(theProc: NimNode, arity: int,
       result.add(newCall("add", ident"err", newLit", "))
   var expectedStr = ""
   for overload in overloads:
-    let impl = overload.getImpl
-    expectedStr.add("  " & impl[0].repr & impl[3].repr)
+    let
+      impl = overload.getImpl
+      params = impl[3]
+    expectedStr.add("  " & wrenName & '(')
+    for i, defs in params[1..^1]:
+      for j, def in defs[0..^3]:
+        expectedStr.add(def.repr)
+        if j < defs.len - 3:
+          expectedStr.add(", ")
+      expectedStr.add(": " & getWrenName(defs[^2]))
+      if i < params.len - 2:
+        expectedStr.add(", ")
+    expectedStr.add("): " & getWrenName(params[0]))
   result.add(newCall("add", ident"err",
                      newLit(">\nbut expected one of:\n" & expectedStr)))
   result.add(fiberAbort)
@@ -550,7 +583,8 @@ proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
     if objType.isRef:
       result.add(newCall("GC_ref", obj))
 
-proc genProcGlue(theProc: NimNode, isGetter, isStatic: bool): NimNode =
+proc genProcGlue(theProc: NimNode, wrenName: string,
+                 isGetter, isStatic: bool): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
 
   # get some metadata about the proc
@@ -589,10 +623,10 @@ proc genProcGlue(theProc: NimNode, isGetter, isStatic: bool): NimNode =
           newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
                   ident"vm", newLit(0), call)
   # generate type check
-  let typeCheck = genTypeCheck(procParams, isStatic, isCtor = false)
+  let typeCheck = genTypeCheck(procParams, isStatic)
   body.add(newIfStmt((cond: typeCheck, body: callWithReturn))
-           .add(newTree(nnkElse,
-                        genTypeError(theProc, procParams.len, theProc))))
+           .add(newTree(nnkElse, genTypeError(theProc, wrenName,
+                                              procParams.len, theProc))))
   result.body = body
 
 proc genSignature(theProc: NimNode, wrenName: string,
@@ -673,7 +707,7 @@ macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
   result = newStmtList()
   result.add(newCall("addProc", vm, module,
                      classLit, nameLit, isStaticLit,
-                     genProcGlue(theProc, isGetter, isStatic)))
+                     genProcGlue(theProc, wrenName, isGetter, isStatic)))
   var wrenDecl = "foreign "
   if isStatic:
     wrenDecl.add("static ")
@@ -736,7 +770,7 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
     # of initializer
     if kind == ipInit: procParams[1..^1]
     else: procParams
-  let typeCheck = genTypeCheck(initParams, isStatic = false, isCtor = true)
+  let typeCheck = genTypeCheck(initParams, isStatic = true)
   # finally, initialize or construct the object
   var initBody = newStmtList()
   case kind
@@ -761,8 +795,8 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
       initBody.add(newCall("GC_ref",
                            newTree(nnkBracketExpr, ident"foreignData")))
   body.add(newIfStmt((cond: typeCheck, body: initBody))
-           .add(newTree(nnkElse,
-                        genTypeError(theProc, procParams.len, theProc))))
+           .add(newTree(nnkElse, genTypeError(theProc, "new",
+                                              procParams.len, theProc))))
   result.body = body
 
 proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
@@ -851,7 +885,7 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
   while ty.kind == nnkRefTy:
     ty = ty[0]
   if ty.kind != nnkObjectTy: return
-  let parent = getParent(ty)
+  let parent = getParent(class)
   if parent != nil:
     result.add(genFieldGlue(vm, parent, module, wrenClass))
   for rec in ty[2]:
@@ -958,11 +992,14 @@ proc isWrenIdent(str: string): bool =
 proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
   ## Extract the Nim name and Wren name from the given declaration.
   if decl.kind == nnkInfix and decl[0].strVal == "->":
-    decl[2].expectKind({nnkIdent, nnkStrLit})
-    if decl[2].kind == nnkStrLit:
-      if not decl[2].strVal.isWrenIdent:
-        error("not a valid Wren identifier", decl[2])
-    result = (nim: decl[1], wren: decl[2].strVal)
+    decl[2].expectKind({nnkIdent, nnkStrLit, nnkAccQuoted})
+    var alias = decl[2]
+    if alias.kind == nnkAccQuoted:
+      alias = alias[0]
+    if alias.kind == nnkStrLit:
+      if not alias.strVal.isWrenIdent:
+        error("not a valid Wren identifier", alias)
+    result = (nim: decl[1], wren: alias.strVal)
   elif decl.kind == nnkCall:
     result = (nim: decl, wren: decl[0].repr)
   elif decl.kind == nnkIdent:
