@@ -229,6 +229,27 @@ suite "euwren":
       System.print(a)
     """)
     check vmOut == "[30.0, 20.0]\n"
+  test "foreign() - `var` receiver":
+    type
+      Counter = object
+        count: int
+    proc newCounter(): Counter = Counter(count: 0)
+    proc inc(counter: var Counter) = inc(counter.count)
+    proc count(counter: Counter): int = counter.count
+    wren.foreign("count"):
+      Counter:
+        [new] newCounter
+        inc(var Counter)
+        [get] count
+    wren.ready()
+    wren.run("""
+      import "count" for Counter
+      var x = Counter.new()
+      System.print(x.count)
+      x.inc()
+      System.print(x.count)
+    """)
+    check vmOut == "0\n1\n"
 
   #--
   # enums
