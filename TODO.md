@@ -7,7 +7,7 @@
     - [ ] Argument type-based overloads
     - [ ] Aborting fibers on exceptions in foreign procs
   - [x] Objects
-    - [ ] Automatic public field binding
+    - [x] Automatic public field binding
   - [x] Enums
   - [x] Symbol aliasing
   - [x] Automatic Wren module generation
