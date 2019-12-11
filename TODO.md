@@ -5,7 +5,7 @@
 - [x] `foreign()`
   - [x] Procs
     - [ ] Argument type-based overloads
-    - [ ] Aborting fibers on exceptions in foreign procs
+    - [x] Aborting fibers on exceptions in foreign procs
   - [x] Objects
     - [x] Automatic public field binding
   - [x] Enums
