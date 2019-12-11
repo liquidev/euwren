@@ -66,6 +66,8 @@ type
       stackTrace*: seq[tuple[module: string, line: int, message: string]]
 
 proc `$`*(vm: Wren): string =
+  ## Return a string representation of the Wren instance. Keep in mind this
+  ## doesn't really hold much useful information.
   result = "- Wren instance\n" &
            "VM: " & $cast[int](vm.handle) & '\n'
 
@@ -279,13 +281,13 @@ proc checkRuntimeError(vm: Wren, interpretResult: WrenInterpretResult) =
     raise vm.getError(interpretResult)
 
 proc module*(vm: Wren, name, src: string) =
-  ## Runs the provided source code inside of the specified `main` module.
+  ## Runs the provided source code inside of the specified module.
   vm.checkRuntimeError(wrenInterpret(vm.handle, name, src))
 
 proc run*(vm: Wren, src: string) =
   ## Runs the provided source code inside of a module named "main". This should
   ## be used for the entry point of your program. Use ``module`` if you want to
-  ## modify the module name (used in error messages).
+  ## modify the module name (used in error messages and imports).
   vm.module("main", src)
 
 proc `[]`*(vm: Wren, module, variable: string, T: typedesc): T =
@@ -426,6 +428,7 @@ proc isRef(class: NimNode): bool =
       result = true
 
 proc newCast(T, val: NimNode): NimNode =
+  ## Create a new nnkCast node, which casts ``val`` to ``T``.
   newTree(nnkCast, T, val)
 
 proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
@@ -451,7 +454,7 @@ proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
                   ident"vm", slot)
     result.add(getter)
 
-proc genTypeCheck*(types: varargs[NimNode], isStatic: bool): NimNode =
+proc genTypeCheck(types: varargs[NimNode], isStatic: bool): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
   ## a big chain of conditions which check the type.
   ## This is a much better way of checking types compared to the 0.1.0
@@ -506,6 +509,9 @@ proc genTypeCheck*(types: varargs[NimNode], isStatic: bool): NimNode =
     result = newTree(nnkInfix, ident"and", checks[i], result)
 
 proc getWrenName(typeSym: NimNode): string =
+  ## Get the Wren name for the corresponding type. This aliases number types
+  ## to ``number``, ``WrenRef`` to ``object``, and any Wren-bound types to
+  ## their names in the Wren VM.
   if typeSym.typeKind in {ntyInt..ntyUint64}: result = "number"
   elif typeSym == bindSym"WrenRef": result = "object"
   elif typeSym.typeKind in {ntyObject, ntyRef} and
@@ -549,6 +555,11 @@ proc genTypeError(theProc: NimNode, wrenName: string, arity: int,
 
 proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
                           exprIsInit = false): NimNode =
+  ## Generate a statement list with the initialization procedure for a new
+  ## foreign object. ``expr`` is the expression that needs to be called to
+  ## initialize the given ``objType``. ``slot`` is the VM slot where the new
+  ## foreign object should be stored. If ``exprIsInit`` is true, ``expr`` will
+  ## be treated as an initializer instead of a constructor.
   result = newStmtList()
   # create the foreign object
   let
@@ -674,6 +685,9 @@ proc genSignature(theProc: NimNode, wrenName: string,
 
 proc resolveOverload(procSym: NimNode, overloaded: bool,
                      params: varargs[NimNode]): NimNode =
+  ## Resolve the overload of ``procSym``. If ``overloaded`` is true, overload
+  ## parameters were provided during binding, and ``params`` are the desired
+  ## overload's parameters.
   result = procSym
   if procSym == nil: return
   if procSym.kind != nnkSym:
@@ -850,12 +864,14 @@ proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
     result = newNilLit()
 
 proc genFieldGetter(name, ty, field, fieldTy: NimNode): NimNode =
+  ## Generates a wrapper procedure that retrieves a value from a field.
   result = newProc(name, params = [fieldTy])
   result.params.add(newTree(nnkIdentDefs, ident"x", ty, newEmptyNode()))
   result.body.add(newTree(nnkAsgn, ident"result",
                           newTree(nnkDotExpr, ident"x", field)))
 
 proc genFieldSetter(name, ty, field, fieldTy: NimNode): NimNode =
+  ## Generates a wrapper procedure that sets a field's value.
   result = newProc(name)
   let paramTy =
     if ty.isRef: ty
@@ -865,7 +881,10 @@ proc genFieldSetter(name, ty, field, fieldTy: NimNode): NimNode =
   result.body.add(newTree(nnkAsgn, newTree(nnkDotExpr, ident"x", field),
                           ident"val"))
 
-proc genGetSet(vm, class, module, identDefs: NimNode, wrenClass: string): NimNode =
+proc genGetSet(vm, class, module, identDefs: NimNode,
+               wrenClass: string): NimNode =
+  ## Generates the necessary glue getters, glue setters, and ``addProcAux``
+  ## calls for the given ``identDefs`` to wrap the fields of an object.
   result = newStmtList()
   for def in identDefs[0..^3]:
     if def.kind == nnkPostfix and def[0].strVal == "*":
@@ -884,7 +903,8 @@ proc genGetSet(vm, class, module, identDefs: NimNode, wrenClass: string): NimNod
 
 proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
   ## Generates code which binds the given object's fields to the VM, by
-  ## generating glue procedures that get or set the fields.
+  ## generating glue procedures that get or set the fields and using
+  ## ``addProcAux`` to bind them.
   result = newStmtList()
   var ty = class.getImpl[2]
   while ty.kind == nnkRefTy:
@@ -1024,6 +1044,9 @@ proc getClassAlias(decl: NimNode): tuple[class, procs: NimNode, wren: string] =
     error("invalid binding", decl)
 
 proc genClassBinding(vm, module, decl: NimNode): NimNode =
+  ## Generate a set of calls that binds a set of procedures, and optionally, a
+  ## Nim object, from the AST provided in ``decl``. This is part of the
+  ## ``foreign()`` DSL.
   var stmts = newStmtList()
   stmts.add(newVarStmt(ident"classMethods", newLit("")))
   let (class, procs, wrenClass) = getClassAlias(decl)
@@ -1096,6 +1119,9 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
   result = newBlockStmt(stmts)
 
 macro genEnumAux*(theEnum: typed, wrenName, prefix: string): untyped =
+  ## Generates the code required to bind to a Wren VM. This is an implementation
+  ## detail used by ``foreign()``, and may only be used in the context created
+  ## by it; thus, you should not use it in your code.
   result = newStmtList()
   let
     impl = theEnum.getImpl[2]
@@ -1134,9 +1160,14 @@ macro genEnumAux*(theEnum: typed, wrenName, prefix: string): untyped =
   result.add(newCall("add", ident"modSrc", newLit("}\n")))
 
 proc getGenEnumAuxCall(theEnum: NimNode, wrenName, prefix: string): NimNode =
+  ## Create a call to ``getEnumAux``, binding the given enum, with the given
+  ## ``wrenName``, and optionally a ``prefix`` to be stripped from the enum. If
+  ## ``prefix`` is ``""``, nothing will be stripped.
   result = newCall("genEnumAux", theEnum, newLit(wrenName), newLit(prefix))
 
 proc genEnumBinding(decl: NimNode): NimNode =
+  ## Generates an enum binding from the AST of ``decl``. This is part of the
+  ## ``foreign()`` DSL.
   if decl.kind == nnkIdent:
     result = getGenEnumAuxCall(decl, decl.repr, "")
   elif decl.kind == nnkInfix:
