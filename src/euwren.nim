@@ -228,8 +228,8 @@ proc setSlot*[T](vm: RawVM, slot: int, val: T) =
     {.error: "unsupported type for slot assignment: " & $T.}
 
 proc abortFiber*(vm: RawVM, message: string) =
-  vm.setSlot[:string](23, message)
-  wrenAbortFiber(vm, 23)
+  vm.setSlot[:string](0, message)
+  wrenAbortFiber(vm, 0)
 
 proc checkParent*(vm: RawVM, base, compare: uint16): bool =
   ## Check if the ``compare`` type is one of ``base``'s parent types.
@@ -599,6 +599,31 @@ proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
     if objType.isRef:
       result.add(newCall("GC_ref", obj))
 
+proc genForeignErrorCheck(expr: NimNode): NimNode =
+  ## Wraps ``expr`` in a try…except statement, which, in case of error, aborts
+  ## the current fiber with the caught exception's error message.
+  ## If in a debug build, the message will also contain the stack traceback.
+  result = newNimNode(nnkTryStmt)
+  result.add(newStmtList(expr))
+  var
+    branch = newNimNode(nnkExceptBranch)
+    branchStmts = newStmtList()
+  let
+    errSym = genSym(nskLet, "error")
+    msgSym = genSym(nskVar, "errorMessage")
+  branchStmts.add(newLetStmt(errSym, newCall("getCurrentException")))
+  branchStmts.add(newVarStmt(msgSym, newTree(nnkDotExpr, errSym, ident"msg")))
+  branchStmts.add(newCall("add", msgSym, newLit(" [")))
+  branchStmts.add(newCall("add", msgSym,
+                          newTree(nnkDotExpr, errSym, ident"name")))
+  branchStmts.add(newCall("add", msgSym, newLit(']')))
+  when not defined(release) and not defined(danger):
+    branchStmts.add(newCall("add", msgSym, newLit("\nnim stack trace:\n")))
+    branchStmts.add(newCall("add", msgSym, newCall("getStackTrace", errSym)))
+  branchStmts.add(newCall("abortFiber", ident"vm", msgSym))
+  branch.add(branchStmts)
+  result.add(branch)
+
 proc genProcGlue(theProc: NimNode, wrenName: string,
                  isGetter, isStatic: bool): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
@@ -638,9 +663,10 @@ proc genProcGlue(theProc: NimNode, wrenName: string,
         else:
           newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
                   ident"vm", newLit(0), call)
+    callWithTry = genForeignErrorCheck(callWithReturn)
   # generate type check
   let typeCheck = genTypeCheck(procParams, isStatic)
-  body.add(newIfStmt((cond: typeCheck, body: callWithReturn))
+  body.add(newIfStmt((cond: typeCheck, body: callWithTry))
            .add(newTree(nnkElse, genTypeError(theProc, wrenName,
                                               procParams.len, theProc))))
   result.body = body

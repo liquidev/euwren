@@ -144,10 +144,35 @@ suite "euwren":
     check vmOut == "got A\ngot B\ngot A\ngot C\n"
     expect WrenError:
       wren.run("""
-        import "test" for A, Test
         var a = A.new()
         Test.printC(a)
       """)
+  test "foreign() - procedure exceptions":
+    var success = false
+    proc exceptionTest() =
+      raise newException(Exception, "test error")
+    proc ok() = success = true
+    wren.foreign("test"):
+      Test:
+        exceptionTest
+        ok
+    wren.ready()
+    expect WrenError:
+      wren.run("""
+        import "test" for Test
+        Test.exceptionTest()
+      """)
+    wren.run("""
+      var error = Fiber.new { Test.exceptionTest() }.try()
+      if (error.startsWith("test error [Exception]")) {
+        Test.ok()
+      } else {
+        System.print("fail: wanted `test error [Exception]`")
+        System.print("got: " + error)
+      }
+    """)
+    if not success: echo vmOut
+    check success
 
   #--
   # objects
