@@ -2,7 +2,7 @@ import unittest
 
 import euwren
 
-suite "euwren":
+suite "base API":
   setup:
     var
       wren = newWren()
@@ -58,11 +58,19 @@ suite "euwren":
         System.print("Adding a num to a string " + 10)
       """)
 
+suite "foreign()":
+  setup:
+    var
+      wren = newWren()
+      vmOut = ""
+    wren.onWrite do (str: string):
+      vmOut.add(str)
+
   #--
   # procedures
   #--
 
-  test "foreign() - basic procedures":
+  test "basic procedures":
     var state = "didn't pass"
     proc goal() =
       state = "passed!"
@@ -75,7 +83,7 @@ suite "euwren":
       Test.goal()
     """)
     check state == "passed!"
-  test "foreign() - procedure aliasing":
+  test "procedure aliasing":
     proc getGreeting(target: string): string =
       result = "Hello, " & target & "!"
     wren.foreign("test"):
@@ -89,7 +97,7 @@ suite "euwren":
       System.print(Greeting["Nim"])
     """)
     check vmOut == "Hello, world!\nHello, Nim!\n"
-  test "foreign() - procedure overloading":
+  test "procedure overloading":
     proc add(a, b: int): int = a + b
     proc add(a, b, c: int): int = a + b + c
     wren.foreign("test"):
@@ -103,7 +111,7 @@ suite "euwren":
       System.print(Adder.add(1, 2, 3))
     """)
     check vmOut == "10\n6\n"
-  test "foreign() - type checking":
+  test "type checking":
     type
       A = ref object of RootObj
         a*: string
@@ -147,7 +155,7 @@ suite "euwren":
         var a = A.new()
         Test.printC(a)
       """)
-  test "foreign() - procedure exceptions":
+  test "procedure exceptions":
     var success = false
     proc exceptionTest() =
       raise newException(Exception, "test error")
@@ -173,12 +181,22 @@ suite "euwren":
     """)
     if not success: echo vmOut
     check success
+  test "default param handling":
+    proc defaultParams(x = 2): int = x + 1
+    wren.foreign("test"):
+      Test:
+        defaultParams
+    wren.ready()
+    wren.run("""
+      import "test" for Test
+      System.print(Test.defaultParams(2))
+    """)
 
   #--
   # objects
   #--
 
-  test "foreign() - objects":
+  test "objects":
     type
       TestObject = object
         publicField*: string
@@ -204,7 +222,7 @@ suite "euwren":
         var x = TestObject.new()
         System.print(x.privateField)
       """)
-  test "foreign() - object aliasing":
+  test "object aliasing":
     type
       ObjectWithVerboseName = object
     proc newObjectWithVerboseName(): ObjectWithVerboseName =
@@ -217,7 +235,7 @@ suite "euwren":
       import "test" for Verbose
       var x = Verbose.new()
     """)
-  test "foreign() - object getters":
+  test "object getters":
     type
       Greeter = object
         target: string
@@ -234,7 +252,7 @@ suite "euwren":
       System.print(x.greeting)
     """)
     check vmOut == "Hello, world!\n"
-  test "foreign() - {.dataClass.}":
+  test "{.dataClass.}":
     type
       Vec2 = object
         x*, y*: float
@@ -254,7 +272,7 @@ suite "euwren":
       System.print(a)
     """)
     check vmOut == "[30.0, 20.0]\n"
-  test "foreign() - `var` receiver":
+  test "`var` receiver":
     type
       Counter = object
         count: int
@@ -275,12 +293,27 @@ suite "euwren":
       System.print(x.count)
     """)
     check vmOut == "0\n1\n"
+  test "ref objects":
+    type
+      RefObj = ref object
+        x: int
+    proc newRefObj(x: int): RefObj = RefObj(x: x)
+    proc something(): RefObj = RefObj(x: 2)
+    wren.foreign("test"):
+      RefObj:
+        [new] newRefObj
+        something
+    wren.ready()
+    wren.run("""
+      import "test" for RefObj
+      var x = RefObj.new(2)
+    """)
 
   #--
   # enums
   #--
 
-  test "foreign() - basic enums":
+  test "basic enums":
     type
       TestEnum = enum
         A, B, C
@@ -294,7 +327,7 @@ suite "euwren":
       System.print(TestEnum.C)
     """)
     check vmOut == "0\n1\n2\n"
-  test "foreign() - enum aliasing":
+  test "enum aliasing":
     type
       TestEnum = enum
         A, B, C
@@ -308,7 +341,7 @@ suite "euwren":
       System.print(Test.C)
     """)
     check vmOut == "0\n1\n2\n"
-  test "foreign() - enum prefix stripping":
+  test "enum prefix stripping":
     type
       TestEnum = enum
         testA, testB, testC
@@ -322,7 +355,7 @@ suite "euwren":
       System.print(TestEnum.C)
     """)
     check vmOut == "0\n1\n2\n"
-  test "foreign() - enum prefix stripping with aliasing":
+  test "enum prefix stripping with aliasing":
     type
       TestEnum = enum
         testA, testB, testC

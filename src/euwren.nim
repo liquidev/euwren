@@ -354,7 +354,9 @@ proc getParamList(formalParams: NimNode): seq[NimNode] =
   ## Flattens an nnkFormalParams into a C-like list of argument types,
   ## eg. ``x, y: int`` becomes ``@[int, int]``.
   for identDefs in formalParams[1..^1]:
-    let ty = identDefs[^2]
+    let ty =
+      if identDefs[^2].kind != nnkEmpty: identDefs[^2]
+      else: identDefs[^1].getTypeInst
     for i in 0..identDefs.len - 3:
       result.add(ty)
 
@@ -583,7 +585,7 @@ proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
     objSym = genSym(nskVar, "objectData")
     ptrObjType = newTree(nnkPtrTy, objType)
     objAddr = newTree(nnkAddr, newTree(nnkBracketExpr, dataSym, newLit(1)))
-    obj = newTree(nnkBracketExpr, objSym)
+    obj = newTree(nnkDerefExpr, objSym)
   result.add(newVarStmt(objSym, newCast(ptrObjType, objAddr)))
   if exprIsInit:
     let
@@ -789,13 +791,11 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
   var body = newStmtList()
   # create the necessary variables and add type metadata
   let
-    # the raw Wren instance
-    rawVM = newDotExpr(vm, ident"handle")
     # raw memory, this includes the type ID prepended before the actual data
     sizeofU16 = newCall("sizeof", ident"uint16")
     sizeofClass = newCall("sizeof", class)
     foreignSize = newTree(nnkInfix, ident"+", sizeofU16, sizeofClass)
-    newForeignCall = newCall("newForeign", rawVM, newLit(0), foreignSize)
+    newForeignCall = newCall("newForeign", ident"vm", newLit(0), foreignSize)
     rawMemVar = newVarStmt(ident"rawMem",
                            newCast(parseExpr"ptr UncheckedArray[uint16]",
                                    newForeignCall))
@@ -833,12 +833,12 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
     # constructor
     let
       ctorCall = newCall(theProc, getSlotGetters(initParams, true))
-      dataAssign = newAssignment(newTree(nnkBracketExpr, ident"foreignData"),
+      dataAssign = newAssignment(newTree(nnkDerefExpr, ident"foreignData"),
                                  ctorCall)
     initBody.add(dataAssign)
     if procRetType.isRef:
       initBody.add(newCall("GC_ref",
-                           newTree(nnkBracketExpr, ident"foreignData")))
+                           newTree(nnkDerefExpr, ident"foreignData")))
   body.add(newIfStmt((cond: typeCheck, body: initBody))
            .add(newTree(nnkElse, genTypeError(theProc, "new",
                                               procParams.len, theProc))))
@@ -879,12 +879,12 @@ proc genDestroyGlue(vm, class, procSym: NimNode): NimNode =
           error("no suitable destructor found", theProc)
       # call the destructor
       let destructorParam =
-        if class.isRef: newTree(nnkBracketExpr, ident"foreignData")
+        if class.isRef: newTree(nnkDerefExpr, ident"foreignData")
         else: newCast(newTree(nnkVarTy, class), ident"foreignData")
       body.add(newCall(theProc, destructorParam))
     # if dealing with a GD'd type, unref it
     if class.isRef:
-      body.add(newCall("GC_unref", newTree(nnkBracketExpr, ident"foreignData")))
+      body.add(newCall("GC_unref", newTree(nnkDerefExpr, ident"foreignData")))
     result.body = body
   else:
     result = newNilLit()
@@ -978,6 +978,10 @@ macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
                    " {}\n"
     result.add(newCall("add", ident"classMethods", newLit(ctorDecl)))
   # save the Wren type name
+  wrenNames[getTypeId(class)] = (module.strVal, wrenClass.strVal)
+
+macro saveWrenName*(class: typed, module, wrenClass: string) =
+  ## Implementation detail; do not use in your code.
   wrenNames[getTypeId(class)] = (module.strVal, wrenClass.strVal)
 
 proc getOverloadParams(def: NimNode): seq[NimNode] =
@@ -1103,12 +1107,14 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         procInit = p[1]
         initProcKind = ipInit
         isObject = true
+        stmts.add(newCall("saveWrenName", class, module, newLit(wrenClass)))
       of "new":
         if procInit != nil:
           error("class may only have one constructing proc", p)
         procInit = p[1]
         initProcKind = ipNew
         isObject = true
+        stmts.add(newCall("saveWrenName", class, module, newLit(wrenClass)))
       of "destroy":
         procDestroy = p[1]
       of "get":
@@ -1127,6 +1133,7 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
           of "dataClass":
             # make the class a 'data class' (an object without a constructor)
             isObject = true
+            stmts.add(newCall("saveWrenName", class, module, newLit(wrenClass)))
             stmts.add(getAddClassAuxCall(vm, module, class, wrenClass,
                                          procInit, procDestroy, initProcKind))
     elif p.kind == nnkDiscardStmt: discard # discard statement
