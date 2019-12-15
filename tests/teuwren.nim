@@ -192,37 +192,86 @@ suite "foreign()":
       System.print(Test.defaultParams(2))
     """)
   test "array params":
-    proc testArray0(x: array[4, int], doCheck: bool) =
-      if doCheck:
-        check x == [1, 2, 3, 4]
-    proc testArray1(x: array[1..4, int]) =
-      for i in 1..4:
-        check x[i] == i
-    wren.foreign("test"):
-      Array:
-        testArray0 -> test0
-        testArray1 -> test1
-    wren.ready()
-    wren.run("""
-      import "test" for Array
-      Array.test0([1, 2, 3, 4], true)
-      Array.test1([1, 2, 3, 4])
-    """)
-    expect WrenError:
+    test "array params - basic":
+      proc testArray0(x: array[4, int], doCheck: bool) =
+        if doCheck:
+          check x == [1, 2, 3, 4]
+      proc testArray1(x: array[1..4, int]) =
+        for i in 1..4:
+          check x[i] == i
+      wren.foreign("test1"):
+        Array:
+          testArray0 -> test0
+          testArray1 -> test1
+      wren.ready()
       wren.run("""
-        Array.test0([1, 2], false)
+        import "test1" for Array
+        Array.test0([1, 2, 3, 4], true)
+        Array.test1([1, 2, 3, 4])
+      """)
+      expect WrenError:
+        wren.run("""
+          Array.test0([1, 2], false)
+        """)
+      expect WrenError:
+        wren.run("""
+          Array.test0([1, "hello", 3, 4], false)
+        """)
+    test "array params - matrix":
+      proc testMatrix(x: array[3, array[3, float]]) =
+        check x == [
+          [0.0, 1.0, 2.0],
+          [1.0, 2.0, 3.0],
+          [2.0, 3.0, 4.0]
+        ]
+      wren.foreign("test2"):
+        Matrix:
+          testMatrix -> test
+      wren.ready()
+      wren.run("""
+        import "test2" for Matrix
+        Matrix.test([
+          [0, 1, 2],
+          [1, 2, 3],
+          [2, 3, 4]
+        ])
       """)
   test "seq params":
-    proc testSeq(x: seq[int]) =
-      check x == @[1, 2, 3]
-    wren.foreign("test"):
-      Seq:
-        testSeq -> test
-    wren.ready()
-    wren.run("""
-      import "test" for Seq
-      Seq.test([1, 2, 3])
-    """)
+    test "seq params - basic":
+      proc testSeq(x: seq[int], doCheck: bool) =
+        if doCheck:
+          check x == @[1, 2, 3]
+      wren.foreign("test1"):
+        Seq:
+          testSeq -> test
+      wren.ready()
+      wren.run("""
+        import "test1" for Seq
+        Seq.test([1, 2, 3], true)
+      """)
+      expect WrenError:
+        wren.run("""
+          Seq.test([1, "hello", 3, true], false)
+        """)
+    test "seq params - nested":
+      proc testNestedSeq(x: seq[seq[int]]) =
+        check x == @[
+          @[1, 2, 3, 4, 5],
+          @[2, 3],
+          @[5, 4, 3]
+        ]
+      wren.foreign("test2"):
+        NestedSeq:
+          testNestedSeq -> test
+      wren.ready()
+      wren.run("""
+        import "test2" for NestedSeq
+        NestedSeq.test([
+          [1, 2, 3, 4, 5],
+          [2, 3],
+          [5, 4, 3]
+        ])
+      """)
 
   #--
   # objects

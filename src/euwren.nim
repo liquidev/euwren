@@ -498,6 +498,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
   # type kind sets
   const
     Nums = {ntyInt..ntyUint64}
+    Lists = {ntyArray, ntySequence}
     Foreign = {ntyObject, ntyRef}
   # flatten any ntyTypeDescs
   var ty = ty
@@ -511,8 +512,12 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
       elif ty.typeKind == ntyString: wtString
       elif ty == bindSym"WrenRef": wtUnknown
       elif ty.kind == nnkBracketExpr:
-        if ty[0] in [bindSym"array", bindSym"seq"]: wtList
+        var subTy = ty[0]
+        while subTy.typeKind == ntyTypeDesc:
+          subTy = subTy.getTypeInst[1]
+        if subTy.typeKind in Lists: wtList
         else:
+          echo ty.treeRepr
           error("generic types besides array and seq are not supported", ty)
           wtUnknown
       elif ty.typeKind in Foreign: wtForeign
