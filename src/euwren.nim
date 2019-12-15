@@ -187,6 +187,10 @@ proc getSlotTypeString*(vm: RawVM, slot: int): string =
     let wvm = cast[Wren](wrenGetUserData(vm))
     result = wvm.typeNames[vm.getSlotForeignId(slot)]
 
+proc getSlotForeign*[T](vm: RawVM, slot: int): ptr T =
+  let raw = cast[ptr UncheckedArray[uint16]](wrenGetSlotForeign(vm, slot.cint))
+  result = cast[ptr T](raw[1].unsafeAddr)
+
 proc getSlot*[T](vm: RawVM, slot: int): T =
   when T is bool:
     result = wrenGetSlotBool(vm, slot.cint)
@@ -238,12 +242,10 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
       wrenReleaseHandle(wr.vm.handle, wr.handle)
     result = WrenRef(vm: cast[Wren](wrenGetUserData(vm)),
                      handle: wrenGetSlotHandle(vm, slot.cint))
+  elif T is object or T is ref:
+    result = getSlotForeign[T](vm, slot)[]
   else:
     {.error: "unsupported type for slot retrieval".}
-
-proc getSlotForeign*[T](vm: RawVM, slot: int): ptr T =
-  let raw = cast[ptr UncheckedArray[uint16]](wrenGetSlotForeign(vm, slot.cint))
-  result = cast[ptr T](raw[1].unsafeAddr)
 
 proc newForeign*(vm: RawVM, slot: int, size: Natural, classSlot = 0): pointer =
   result = wrenSetSlotNewForeign(vm, slot.cint, classSlot.cint, size.cuint)

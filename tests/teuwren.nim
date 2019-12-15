@@ -236,6 +236,30 @@ suite "foreign()":
           [2, 3, 4]
         ])
       """)
+    test "array params - objects":
+      type
+        Test = object
+          x: int
+      proc newTest(x: int): Test = Test(x: x)
+      proc testObjects(x: array[4, Test]) =
+        check x == [
+          Test(x: 1), Test(x: 2), Test(x: 3), Test(x: 4)
+        ]
+      wren.foreign("test3"):
+        Test:
+          [new] newTest
+        Objects:
+          testObjects -> test
+      wren.ready()
+      wren.run("""
+        import "test3" for Test, Objects
+        Objects.test([
+          Test.new(1),
+          Test.new(2),
+          Test.new(3),
+          Test.new(4)
+        ])
+      """)
   test "seq params":
     test "seq params - basic":
       proc testSeq(x: seq[int], doCheck: bool) =
