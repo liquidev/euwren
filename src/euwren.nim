@@ -442,6 +442,11 @@ var
   parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
     ## Maps the unique IDs to their parents' IDs
 
+proc flattenTypeDesc(typeSym: NimNode): NimNode =
+  result = typeSym
+  while result.typeKind == ntyTypeDesc:
+    result = result.getTypeInst[1]
+
 proc getTypeId(typeSym: NimNode): uint16 =
   ## Get a unique type ID for the given type symbol.
   let hash = typeSym.signatureHash
@@ -460,12 +465,7 @@ proc getTypeId(typeSym: NimNode): uint16 =
 
 proc isRef(class: NimNode): bool =
   ## Checks if the given type symbol represents a ref type.
-  if class.typeKind == ntyRef:
-    result = true
-  elif class.typeKind == ntyTypeDesc:
-    let impl = class.getImpl
-    if impl[2].kind == nnkRefTy:
-      result = true
+  result = class.flattenTypeDesc.typeKind == ntyRef
 
 proc newCast(T, val: NimNode): NimNode =
   ## Create a new nnkCast node, which casts ``val`` to ``T``.
@@ -500,10 +500,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
     Nums = {ntyInt..ntyUint64}
     Lists = {ntyArray, ntySequence}
     Foreign = {ntyObject, ntyRef}
-  # flatten any ntyTypeDescs
-  var ty = ty
-  while ty.typeKind == ntyTypeDesc:
-    ty = ty.getTypeInst[1]
+  let ty = ty.flattenTypeDesc
   # generate the check
   let
     wrenType =
@@ -512,12 +509,9 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
       elif ty.typeKind == ntyString: wtString
       elif ty == bindSym"WrenRef": wtUnknown
       elif ty.kind == nnkBracketExpr:
-        var subTy = ty[0]
-        while subTy.typeKind == ntyTypeDesc:
-          subTy = subTy.getTypeInst[1]
+        let subTy = ty[0].flattenTypeDesc 
         if subTy.typeKind in Lists: wtList
         else:
-          echo ty.treeRepr
           error("generic types besides array and seq are not supported", ty)
           wtUnknown
       elif ty.typeKind in Foreign: wtForeign
@@ -569,9 +563,7 @@ proc getWrenName(typeSym: NimNode): string =
   ## Get the Wren name for the corresponding type. This aliases number types
   ## to ``number``, ``WrenRef`` to ``object``, and any Wren-bound types to
   ## their names in the Wren VM.
-  var typeSym = typeSym
-  while typeSym.typeKind == ntyTypeDesc:
-    typeSym = typeSym.getTypeInst[1]
+  let typeSym = typeSym.flattenTypeDesc
   if typeSym.typeKind in {ntyInt..ntyUint64}: result = "number"
   elif typeSym == bindSym"WrenRef": result = "object"
   elif typeSym.typeKind in {ntyObject, ntyRef} and
