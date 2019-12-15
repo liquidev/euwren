@@ -163,6 +163,30 @@ proc ensureSlots*(vm: RawVM, amount: int) =
 proc slotCount*(vm: RawVM): int =
   wrenGetSlotCount(vm)
 
+macro genericParam(T: typed, index: int): untyped =
+  result = T.getTypeInst[1][index.intVal.int]
+
+proc genTypeCheck(vm, ty, slot: NimNode): NimNode
+macro checkType(vm, ty: typed, slot: int): untyped =
+  result = genTypeCheck(vm, ty, slot)
+
+proc getWrenName(typeSym: NimNode): string
+macro wrenName(ty: typed): untyped =
+  result = newLit(getWrenName(ty))
+
+proc getSlotType*(vm: RawVM, slot: int): WrenType =
+  result = wrenGetSlotType(vm, slot.cint).WrenType
+
+proc getSlotForeignId*(vm: RawVM, slot: int): uint16 =
+  result = cast[ptr uint16](wrenGetSlotForeign(vm, slot.cint))[]
+
+proc getSlotTypeString*(vm: RawVM, slot: int): string =
+  let ty = vm.getSlotType(slot)
+  if ty != wtForeign: result = $ty
+  else:
+    let wvm = cast[Wren](wrenGetUserData(vm))
+    result = wvm.typeNames[vm.getSlotForeignId(slot)]
+
 proc getSlot*[T](vm: RawVM, slot: int): T =
   when T is bool:
     result = wrenGetSlotBool(vm, slot.cint)
@@ -177,35 +201,49 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
     result = newString(len.Natural)
     if len > 0:
       copyMem(result[0].unsafeAddr, bytes, len.Natural)
+  elif T is array | seq:
+    const
+      P =
+        when T is array: 2
+        else: 1
+      Min =
+        when T is array: ord(genericParam(T, 1).a)
+        else: 0
+      Max =
+        when T is array: ord(genericParam(T, 1).b)
+        else: 0
+      Len = Max - Min + 1
+    let listLen = wrenGetListCount(vm, slot.cint)
+    when T is seq:
+      result.setLen(listLen)
+    else:
+      if listLen != Len:
+        vm.abortFiber("got list of length " & $listLen & ", but the expected " &
+                      "length is " & $Len)
+        return
+    let listHandle = wrenGetSlotHandle(vm, slot.cint)
+    for i in 0..<listLen:
+      wrenGetListElement(vm, slot.cint, i.cint, slot.cint)
+      if checkType(vm, genericParam(T, P), slot):
+        result[Min + i] = getSlot[genericParam(T, P)](vm, slot)
+        wrenSetSlotHandle(vm, slot.cint, listHandle)
+      else:
+        wrenReleaseHandle(vm, listHandle)
+        vm.abortFiber("got <" & vm.getSlotTypeString(slot) & "> in list, " &
+                      "but expected <" & wrenName(genericParam(T, P)) & ">")
+        return
+    wrenReleaseHandle(vm, listHandle)
   elif T is WrenRef:
     new(result) do (wr: WrenRef):
       wrenReleaseHandle(wr.vm.handle, wr.handle)
     result = WrenRef(vm: cast[Wren](wrenGetUserData(vm)),
                      handle: wrenGetSlotHandle(vm, slot.cint))
-  elif T is object or T is ref object:
-    let
-      raw = cast[ptr UncheckedArray[uint16]](wrenGetSlotForeign(vm, slot.cint))
-      obj = cast[ptr T](raw[1].unsafeAddr)
-    result = obj[]
   else:
     {.error: "unsupported type for slot retrieval".}
 
 proc getSlotForeign*[T](vm: RawVM, slot: int): ptr T =
   let raw = cast[ptr UncheckedArray[uint16]](wrenGetSlotForeign(vm, slot.cint))
   result = cast[ptr T](raw[1].unsafeAddr)
-
-proc getSlotType*(vm: RawVM, slot: int): WrenType =
-  result = wrenGetSlotType(vm, slot.cint).WrenType
-
-proc getSlotForeignId*(vm: RawVM, slot: int): uint16 =
-  result = cast[ptr uint16](wrenGetSlotForeign(vm, slot.cint))[]
-
-proc getSlotTypeString*(vm: RawVM, slot: int): string =
-  let ty = vm.getSlotType(slot)
-  if ty != wtForeign: result = $ty
-  else:
-    let wvm = cast[Wren](wrenGetUserData(vm))
-    result = wvm.typeNames[vm.getSlotForeignId(slot)]
 
 proc newForeign*(vm: RawVM, slot: int, size: Natural, classSlot = 0): pointer =
   result = wrenSetSlotNewForeign(vm, slot.cint, classSlot.cint, size.cuint)
@@ -456,18 +494,53 @@ proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
                   ident"vm", slot)
     result.add(getter)
 
-proc genTypeCheck(types: varargs[NimNode], isStatic: bool): NimNode =
+proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
+  # type kind sets
+  const
+    Nums = {ntyInt..ntyUint64}
+    Foreign = {ntyObject, ntyRef}
+  # flatten any ntyTypeDescs
+  var ty = ty
+  while ty.typeKind == ntyTypeDesc:
+    ty = ty.getTypeInst[1]
+  # generate the check
+  let
+    wrenType =
+      if ty.typeKind == ntyBool: wtBool
+      elif ty.typeKind in Nums: wtNumber
+      elif ty.typeKind == ntyString: wtString
+      elif ty == bindSym"WrenRef": wtUnknown
+      elif ty.kind == nnkBracketExpr:
+        if ty[0] in [bindSym"array", bindSym"seq"]: wtList
+        else:
+          error("generic types besides array and seq are not supported", ty)
+          wtUnknown
+      elif ty.typeKind in Foreign: wtForeign
+      else:
+        error("unsupported type kind: " & $ty.typeKind &
+              " for <" & ty.repr & ">", ty)
+        wtUnknown
+    comparison = newTree(nnkInfix, ident"==",
+                         newCall("getSlotType", ident"vm", slot),
+                         newLit(wrenType))
+  result = comparison
+  if wrenType == wtForeign:
+    let
+      typeId = getTypeId(ty)
+      typeIdLit = newLit(typeId)
+      slotId = newCall("getSlotForeignId", ident"vm", slot)
+      idCheck = newTree(nnkInfix, ident"==", slotId, typeIdLit)
+      parentCheck = newCall(ident"checkParent", ident"vm", typeIdLit, slotId)
+    result = newTree(nnkInfix, ident"and", result,
+                     newPar(newTree(nnkInfix, ident"or", idCheck, parentCheck)))
+
+proc genTypeChecks(types: varargs[NimNode], isStatic: bool): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
   ## a big chain of conditions which check the type.
   ## This is a much better way of checking types compared to the 0.1.0
   ## ``checkTypes``, which simply looped through an array of ``WrenTypeData``
   ## structs and compared them. The current, macro-based version, has much lower
-  ## runtime overhead, because it's just a simple chain of confitions.
-
-  # type kind sets
-  const
-    Nums = {ntyInt..ntyUint64}
-    Foreign = {ntyObject, ntyRef}
+  ## runtime overhead, because it's just a simple chain of conditions.
 
   # there isn't any work to be done if the proc doesn't accept params
   if types.len == ord(not isStatic): return newLit(true)
@@ -480,31 +553,8 @@ proc genTypeCheck(types: varargs[NimNode], isStatic: bool): NimNode =
   # generate a list of checks
   var checks: seq[NimNode]
   for i, ty in types[ord(not isStatic)..^1]:
-    let
-      slot = i + 1
-      wrenType =
-        if ty.typeKind == ntyBool: wtBool
-        elif ty.typeKind in Nums or ty.typeKind == ntyEnum: wtNumber
-        elif ty.typeKind == ntyString: wtString
-        elif ty == bindSym"WrenRef": wtUnknown
-        elif ty.typeKind in Foreign: wtForeign
-        else:
-          echo "[euwren] type is of an unsupported kind: ", ty.repr
-          error("unsupported type kind: " & $ty.typeKind, ty)
-          wtUnknown
-      comparison = newTree(nnkInfix, ident"==",
-                           newCall("getSlotType", ident"vm", newLit(slot)),
-                           newLit(wrenType))
-    checks.add(comparison)
-    if wrenType == wtForeign:
-      let
-        typeId = getTypeId(ty)
-        typeIdLit = newLit(typeId)
-        slotId = newCall("getSlotForeignId", ident"vm", newLit(slot))
-        idCheck = newTree(nnkInfix, ident"==", slotId, typeIdLit)
-        parentCheck = newCall(ident"checkParent", ident"vm", typeIdLit, slotId)
-      checks.add(newPar(newTree(nnkInfix, ident"or", idCheck, parentCheck)))
-
+    let slot = i + 1
+    checks.add(genTypeCheck(ident"vm", ty, newLit(slot)))
   # fold the list of checks to an nnkInfix node
   result = checks[^1]
   for i in countdown(checks.len - 2, 0):
@@ -514,6 +564,9 @@ proc getWrenName(typeSym: NimNode): string =
   ## Get the Wren name for the corresponding type. This aliases number types
   ## to ``number``, ``WrenRef`` to ``object``, and any Wren-bound types to
   ## their names in the Wren VM.
+  var typeSym = typeSym
+  while typeSym.typeKind == ntyTypeDesc:
+    typeSym = typeSym.getTypeInst[1]
   if typeSym.typeKind in {ntyInt..ntyUint64}: result = "number"
   elif typeSym == bindSym"WrenRef": result = "object"
   elif typeSym.typeKind in {ntyObject, ntyRef} and
@@ -667,7 +720,7 @@ proc genProcGlue(theProc: NimNode, wrenName: string,
                   ident"vm", newLit(0), call)
     callWithTry = genForeignErrorCheck(callWithReturn)
   # generate type check
-  let typeCheck = genTypeCheck(procParams, isStatic)
+  let typeCheck = genTypeChecks(procParams, isStatic)
   body.add(newIfStmt((cond: typeCheck, body: callWithTry))
            .add(newTree(nnkElse, genTypeError(theProc, wrenName,
                                               procParams.len, theProc))))
@@ -815,7 +868,7 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
     # of initializer
     if kind == ipInit: procParams[1..^1]
     else: procParams
-  let typeCheck = genTypeCheck(initParams, isStatic = true)
+  let typeCheck = genTypeChecks(initParams, isStatic = true)
   # finally, initialize or construct the object
   var initBody = newStmtList()
   case kind

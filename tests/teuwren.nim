@@ -191,6 +191,38 @@ suite "foreign()":
       import "test" for Test
       System.print(Test.defaultParams(2))
     """)
+  test "array params":
+    proc testArray0(x: array[4, int], doCheck: bool) =
+      if doCheck:
+        check x == [1, 2, 3, 4]
+    proc testArray1(x: array[1..4, int]) =
+      for i in 1..4:
+        check x[i] == i
+    wren.foreign("test"):
+      Array:
+        testArray0 -> test0
+        testArray1 -> test1
+    wren.ready()
+    wren.run("""
+      import "test" for Array
+      Array.test0([1, 2, 3, 4], true)
+      Array.test1([1, 2, 3, 4])
+    """)
+    expect WrenError:
+      wren.run("""
+        Array.test0([1, 2], false)
+      """)
+  test "seq params":
+    proc testSeq(x: seq[int]) =
+      check x == @[1, 2, 3]
+    wren.foreign("test"):
+      Seq:
+        testSeq -> test
+    wren.ready()
+    wren.run("""
+      import "test" for Seq
+      Seq.test([1, 2, 3])
+    """)
 
   #--
   # objects
