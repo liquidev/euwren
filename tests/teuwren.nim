@@ -57,6 +57,34 @@ suite "base API":
       wren.run("""
         System.print("Adding a num to a string " + 10)
       """)
+  test "onLoadModule":
+    wren.onLoadModule do (path: string) -> string:
+      if path == "hello":
+        result = """
+        class Hello {
+          static say() {
+            System.print("Hello!")
+          }
+        }
+        """
+    wren.run("""
+      import "hello" for Hello
+      Hello.say()
+    """)
+    check vmOut == "Hello!\n"
+  test "onResolveModule":
+    wren.onResolveModule do (importer, name: string) -> string:
+      if importer == "main":
+        result = "test" & name
+      else:
+        result = name
+    wren.module("testthing", """
+      System.print("running from testthing")
+    """)
+    wren.run("""
+      import "thing"
+    """)
+    check vmOut == "running from testthing\n"
 
 suite "foreign()":
   setup:
@@ -260,6 +288,45 @@ suite "foreign()":
           Test.new(4)
         ])
       """)
+  test "array return type":
+    test "array return type - simple":
+      proc getArray(): array[4, int] =
+        result = [1, 2, 3, 4]
+      wren.foreign("test1"):
+        Array:
+          getArray -> get
+      wren.ready()
+      wren.run("""
+        import "test1" for Array
+        var x = Array.get()
+        for (a in x) {
+          System.print(a)
+        }
+      """)
+      check vmOut == "1\n2\n3\n4\n"
+    test "array return type - matrix":
+      proc getMatrix(): array[3, array[3, float]] =
+        result = [
+          [1.0, 2.0, 3.0],
+          [2.0, 3.0, 4.0],
+          [3.0, 4.0, 5.0]
+        ]
+      wren.foreign("test2"):
+        Matrix:
+          getMatrix -> get
+      wren.ready()
+      wren.run("""
+        import "test2" for Matrix
+        var x = Matrix.get()
+        var result = ""
+        for (a in x) {
+          for (b in a) {
+            result = result + b.toString
+          }
+        }
+        System.print(result)
+      """)
+      check vmOut == "123234345\n"
   test "seq params":
     test "seq params - basic":
       proc testSeq(x: seq[int], doCheck: bool) =

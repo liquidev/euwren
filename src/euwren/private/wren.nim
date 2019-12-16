@@ -30,4 +30,11 @@ cCompile(Vm/"wren_vm.c")
 cCompile(Optional/"wren_opt_meta.c")
 cCompile(Optional/"wren_opt_random.c")
 
+cOverride:
+  type
+    WrenLoadModuleFn* = proc (vm: ptr WrenVM, name: cstring): cstring {.cdecl.}
+    WrenReallocateFn* = proc (memory: pointer, size: csize): pointer {.cdecl.}
+    WrenResolveModuleFn* =
+      proc (vm: ptr WrenVM, importer, name: cstring): cstring {.cdecl.}
+
 cImport(Include/"wren.h")

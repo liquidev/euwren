@@ -43,6 +43,8 @@ type
     ## A Wren virtual machine used for executing code.
     handle: RawVM
     procWrite: proc (str: string)
+    procResolveModule: proc (importer, name: string): string
+    procLoadModule: proc (path: string): string
 
     methods: Table[MethodSign, WrenForeignMethodFn]
     classes: Table[ClassSign, WrenForeignClassMethods]
@@ -112,6 +114,23 @@ proc newWren*(): Wren =
                                   line: line.int,
                                   message: $msg))
     else: doAssert(false) # unreachable
+  # modules
+  config.loadModuleFn = proc (vm: RawVM, name: cstring): cstring {.cdecl.} =
+    var source = cast[Wren](wrenGetUserData(vm)).procLoadModule($name)
+    if source.len == 0:
+      source = """Fiber.abort("module doesn't exist")"""
+    let cssource = alloc0((source.len + 1) * sizeof(char))
+    cssource.copyMem(source[0].unsafeAddr, source.len * sizeof(char))
+    result = cast[cstring](cssource)
+  config.resolveModuleFn = proc (vm: RawVM, importer,
+                                 name: cstring): cstring {.cdecl.} =
+    let
+      source =
+        cast[Wren](wrenGetUserData(vm)).procResolveModule($importer, $name)
+      cssource = alloc0((source.len + 1) * sizeof(char))
+    if source.len > 0:
+      cssource.copyMem(source[0].unsafeAddr, source.len * sizeof(char))
+    result = cast[cstring](cssource)
   # FFI
   config.bindForeignMethodFn = proc (vm: RawVM, module: cstring,
                                      class: cstring, isStatic: bool,
@@ -132,12 +151,19 @@ proc newWren*(): Wren =
       result = wvm.classes[sign]
     else:
       result = WrenForeignClassMethods()
+  # memory
+  config.reallocateFn = proc (mem: pointer, newSize: csize): pointer {.cdecl.} =
+    result = realloc(mem, newSize.Natural)
 
   result.handle = wrenNewVM(addr config)
   wrenSetUserData(result.handle, cast[pointer](result))
 
   result.procWrite = proc (str: string) =
     stdout.write(str)
+  result.procLoadModule = proc (path: string): string =
+    result = ""
+  result.procResolveModule = proc (importer, name: string): string =
+    result = name
 
   result.rtError = WrenError(kind: weRuntime)
 
@@ -147,13 +173,43 @@ proc onWrite*(vm: Wren, callback: proc (str: string)) =
   ## writes to stdout.
   vm.procWrite = callback
 
+proc onLoadModule*(vm: Wren, callback: proc (path: string): string) =
+  ## Sets the load module callback for the VM. The callback is called when
+  ## the VM occurs an ``import`` statement, and doesn't have the given module
+  ## loaded yet. The callback should then return the source code of the module
+  ## at ``path``. If the callback returns an empty string, a module that aborts
+  ## the fiber will be loaded (using ``import`` will throw an error). The
+  ## default implementation returns an empty string, so override this if you
+  ## want imports to work.
+  vm.procLoadModule = callback
+
+proc onResolveModule*(vm: Wren,
+                      callback: proc (importer, name: string): string) =
+  ## Sets the resolve module callback for the VM. The callback is called when
+  ## the VM occurs an ``import`` statement, to resolve what module should
+  ## actually be loaded. This is usually used to implement relative imports.
+  ## If the callback returns an empty string, the VM will raise an error saying
+  ## that the requested module could not be found. The default implementation
+  ## simply returns ``name`` without any side effects.
+  vm.procResolveModule = callback
+
+proc newRef(vm: Wren, handle: ptr WrenHandle): WrenRef =
+  ## Create a new, Nim GC-managed WrenRef out of a raw WrenHandle pointer.
+  assert vm != nil
+  assert handle != nil
+  new(result) do (wref: WrenRef):
+    wrenReleaseHandle(wref.vm.handle, wref.handle)
+  result.vm = vm
+  result.handle = handle
+
 #--
 # Low-level APIs
 #--
 
 # Ultimately, you shouldn't need to use these APIs. They're inherently unsafe,
 # and don't provide any guarantees or assertions. In fact, they're only a thin
-# wrapper over the underlying Wren embedding API.
+# wrapper over the underlying Wren embedding API. They're exported only to
+# make the high-level API possible.
 
 # Use with care.
 
@@ -164,7 +220,11 @@ proc slotCount*(vm: RawVM): int =
   wrenGetSlotCount(vm)
 
 macro genericParam(T: typed, index: int): untyped =
+  ## Get the generic param at position ``index`` from T.
   result = T.getTypeInst[1][index.intVal.int]
+macro genericParam(T: typed): untyped =
+  ## Get the actual type behind T.
+  result = T.getTypeInst[1]
 
 proc genTypeCheck(vm, ty, slot: NimNode): NimNode
 macro checkType(vm, ty: typed, slot: int): untyped =
@@ -206,17 +266,16 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
     if len > 0:
       copyMem(result[0].unsafeAddr, bytes, len.Natural)
   elif T is array | seq:
-    const
-      P =
-        when T is array: 2
-        else: 1
-      Min =
-        when T is array: ord(genericParam(T, 1).a)
-        else: 0
-      Max =
-        when T is array: ord(genericParam(T, 1).b)
-        else: 0
-      Len = Max - Min + 1
+    when T is array:
+      const
+        P = 2
+        Min = ord(genericParam(T, 1).a)
+        Max = ord(genericParam(T, 1).b)
+        Len = Max - Min + 1
+    else:
+      const
+        P = 1
+        Min = 0
     let listLen = wrenGetListCount(vm, slot.cint)
     when T is seq:
       result.setLen(listLen)
@@ -238,20 +297,34 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
         return
     wrenReleaseHandle(vm, listHandle)
   elif T is WrenRef:
-    new(result) do (wr: WrenRef):
-      wrenReleaseHandle(wr.vm.handle, wr.handle)
-    result = WrenRef(vm: cast[Wren](wrenGetUserData(vm)),
-                     handle: wrenGetSlotHandle(vm, slot.cint))
-  elif T is object or T is ref:
+    result = cast[Wren](wrenGetUserData(vm))
+      .newRef(wrenGetSlotHandle(vm, slot.cint))
+  elif T is object | ref:
     result = getSlotForeign[T](vm, slot)[]
   else:
-    {.error: "unsupported type for slot retrieval".}
+    {.error: "unsupported type for slot retrieval: " & $T.}
 
 proc newForeign*(vm: RawVM, slot: int, size: Natural, classSlot = 0): pointer =
   result = wrenSetSlotNewForeign(vm, slot.cint, classSlot.cint, size.cuint)
 
 proc getVariable*(vm: RawVM, slot: int, module, variable: string) =
   wrenGetVariable(vm, module, variable, slot.cint)
+
+proc getTypeId(typeSym: NimNode): uint16
+macro typeId(typeSym: typed): uint16 =
+  result = newLit(getTypeId(typeSym))
+
+proc getWrenVar(id: uint16): ModuleVar {.compileTime.}
+macro wrenVar(id: uint16): untyped =
+  let v = getWrenVar(id.intVal.uint16)
+  result = newTree(nnkPar, newLit(v.module), newLit(v.variable))
+
+proc genForeignObjectInit(vm, objType, expr, slot: NimNode,
+                          exprIsInit = false): NimNode
+macro foreignObjectInit(vm, objType, expr: typed, slot: int,
+                        exprIsInit = false): untyped =
+  result = genForeignObjectInit(vm, objType, expr, slot,
+                                exprIsInit.boolVal)
 
 proc setSlot*[T](vm: RawVM, slot: int, val: T) =
   when T is bool:
@@ -262,8 +335,21 @@ proc setSlot*[T](vm: RawVM, slot: int, val: T) =
     wrenSetSlotDouble(vm, slot.cint, ord(val).cdouble)
   elif T is string:
     wrenSetSlotBytes(vm, slot.cint, val, val.len.cuint)
+  elif T is array | seq:
+    const P =
+      when T is array: 2
+      else: 1
+    wrenEnsureSlots(vm, cint(slot + 1))
+    wrenSetSlotNewList(vm, slot.cint)
+    for x in val:
+      setSlot[genericParam(T, P)](vm, slot + 1, x)
+      wrenInsertInList(vm, slot.cint, -1, cint(slot + 1))
   elif T is WrenRef:
     wrenSetSlotHandle(vm, slot.cint, val.handle)
+  elif T is object | ref:
+    let varInfo = wrenVar(typeId(genericParam(T)))
+    vm.getVariable(slot, varInfo[0], varInfo[1])
+    foreignObjectInit(vm, genericParam(T), val, slot)
   else:
     {.error: "unsupported type for slot assignment: " & $T.}
 
@@ -330,32 +416,24 @@ proc run*(vm: Wren, src: string) =
   ## modify the module name (used in error messages and imports).
   vm.module("main", src)
 
-proc `[]`*(vm: Wren, module, variable: string, T: typedesc): T =
-  ## Retrieves a variable from the Wren VM. This is a version for primitives
-  ## and foreign objects. If you need to access a Wren object, use the version
-  ## that doesn't accept a ``typedesc``.
-  # TODO: add checks that make sure the type is correct.
+proc `[]`*(vm: Wren, module, variable: string, T: typedesc = WrenRef): T =
+  ## Retrieves a variable from the Wren VM. This works both for primitives and
+  ## Wren objects (pass ``WrenRef`` to ``T`` to retrieve a Wren object).
+  ## If the variable type does not match ``T``, an error will be thrown nagging
+  ## the application user.
   wrenEnsureSlots(vm.handle, 1)
   wrenGetVariable(vm.handle, module, variable, 0)
+  if not checkType(vm.handle, genericParam(T), 0):
+    raise newException(WrenError,
+                       "in wren module '" & module & "': variable '" &
+                       variable & "' has type <" &
+                       vm.handle.getSlotTypeString(0) & ">, but expected <" &
+                       wrenName(genericParam(T)) & ">")
   result = getSlot[T](vm.handle, 0)
-
-proc `[]`*(vm: Wren, module, variable: string): WrenRef =
-  ## Retrieves a variable from the Wren VM. This is only really useful for
-  ## working with Wren objects, since you can't access them directly. For
-  ## primitives, use the version that accepts an additional ``typedesc``.
-  new(result) do (wr: WrenRef):
-    wrenReleaseHandle(wr.vm.handle, wr.handle)
-  wrenEnsureSlots(vm.handle, 1)
-  wrenGetVariable(vm.handle, module, variable, 1)
-  result.vm = vm
-  result.handle = wrenGetSlotHandle(vm.handle, 1)
 
 proc `{}`*(vm: Wren, signature: string): WrenRef =
   ## Creates a 'call handle' to the method denoted by ``methodSignature``.
-  new(result) do (wm: WrenRef):
-    wrenReleaseHandle(wm.vm.handle, wm.handle)
-  result.vm = vm
-  result.handle = wrenMakeCallHandle(vm.handle, signature)
+  result = vm.newRef(wrenMakeCallHandle(vm.handle, signature))
 
 converter toWrenValue*(val: bool): WrenValue =
   WrenValue(kind: wvkBool, boolVal: val)
@@ -374,6 +452,10 @@ proc call*[T](vm: Wren, theMethod: WrenRef,
   ## always be present, and is the receiver of the method. The rest of the
   ## arguments is optional. The generic parameter decides on the return type of
   ## the method (which can be void).
+  ##
+  ## **Design note:** The ``receiver`` param only accepts ``WrenRef``, because
+  ## it's pretty much never useful to call a method on a primitive type, since
+  ## the native implementation is always faster.
   wrenEnsureSlots(vm.handle, cint(1 + args.len))
   vm.handle.setSlot[:WrenRef](0, receiver)
   for i, arg in args:
@@ -444,6 +526,9 @@ var
   parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
     ## Maps the unique IDs to their parents' IDs
 
+proc getWrenVar(id: uint16): ModuleVar {.compileTime.} =
+  result = wrenNames[id]
+
 proc flattenTypeDesc(typeSym: NimNode): NimNode =
   result = typeSym
   while result.typeKind == ntyTypeDesc:
@@ -511,7 +596,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
       elif ty.typeKind == ntyString: wtString
       elif ty == bindSym"WrenRef": wtUnknown
       elif ty.kind == nnkBracketExpr:
-        let subTy = ty[0].flattenTypeDesc 
+        let subTy = ty[0].flattenTypeDesc
         if subTy.typeKind in Lists: wtList
         else:
           error("generic types besides array and seq are not supported", ty)
@@ -522,20 +607,21 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
               " for <" & ty.repr & ">", ty)
         wtUnknown
     comparison = newTree(nnkInfix, ident"==",
-                         newCall("getSlotType", ident"vm", slot),
+                         newCall("getSlotType", vm, slot),
                          newLit(wrenType))
   result = comparison
   if wrenType == wtForeign:
     let
       typeId = getTypeId(ty)
       typeIdLit = newLit(typeId)
-      slotId = newCall("getSlotForeignId", ident"vm", slot)
+      slotId = newCall("getSlotForeignId", vm, slot)
       idCheck = newTree(nnkInfix, ident"==", slotId, typeIdLit)
-      parentCheck = newCall(ident"checkParent", ident"vm", typeIdLit, slotId)
+      parentCheck = newCall(ident"checkParent", vm, typeIdLit, slotId)
     result = newTree(nnkInfix, ident"and", result,
                      newPar(newTree(nnkInfix, ident"or", idCheck, parentCheck)))
 
-proc genTypeChecks(types: varargs[NimNode], isStatic: bool): NimNode =
+proc genTypeChecks(vm: NimNode, isStatic: bool,
+                   types: varargs[NimNode]): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
   ## a big chain of conditions which check the type.
   ## This is a much better way of checking types compared to the 0.1.0
@@ -555,7 +641,7 @@ proc genTypeChecks(types: varargs[NimNode], isStatic: bool): NimNode =
   var checks: seq[NimNode]
   for i, ty in types[ord(not isStatic)..^1]:
     let slot = i + 1
-    checks.add(genTypeCheck(ident"vm", ty, newLit(slot)))
+    checks.add(genTypeCheck(vm, ty, newLit(slot)))
   # fold the list of checks to an nnkInfix node
   result = checks[^1]
   for i in countdown(checks.len - 2, 0):
@@ -607,13 +693,14 @@ proc genTypeError(theProc: NimNode, wrenName: string, arity: int,
                      newLit(">\nbut expected one of:\n" & expectedStr)))
   result.add(fiberAbort)
 
-proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
+proc genForeignObjectInit(vm, objType, expr, slot: NimNode,
                           exprIsInit = false): NimNode =
   ## Generate a statement list with the initialization procedure for a new
   ## foreign object. ``expr`` is the expression that needs to be called to
   ## initialize the given ``objType``. ``slot`` is the VM slot where the new
-  ## foreign object should be stored. If ``exprIsInit`` is true, ``expr`` will
-  ## be treated as an initializer instead of a constructor.
+  ## foreign object should be stored. It is also the slot where the foreign
+  ## class must be stored. If ``exprIsInit`` is true, ``expr`` will be treated
+  ## as an initializer instead of a constructor.
   result = newStmtList()
   # create the foreign object
   let
@@ -621,8 +708,7 @@ proc genForeignObjectInit(vm, objType, expr: NimNode, slot: int,
                    newCall("sizeof", ident"uint16"),
                    newCall("sizeof", objType))
     dataSym = genSym(nskVar, "data")
-    slotLit = newLit(slot)
-    newForeignCall = newCall("newForeign", vm, slotLit, size, slotLit)
+    newForeignCall = newCall("newForeign", vm, slot, size, slot)
     u16array = newTree(nnkPtrTy,
                        newTree(nnkBracketExpr,
                               ident"UncheckedArray", ident"uint16"))
@@ -699,27 +785,11 @@ proc genProcGlue(theProc: NimNode, wrenName: string,
       # no return type
       if procRetType.kind == nnkEmpty or eqIdent(procRetType, "void"): call
       # some return type
-      else:
-        # object return type
-        if (procRetType.typeKind == ntyObject or procRetType.isRef) and
-           procRetType != bindSym"WrenRef":
-          let retTypeId = getTypeId(procRetType)
-          var stmts = newStmtList()
-          if retTypeId notin wrenNames:
-            error("[euwren] return type unknown to the VM, " &
-                  "register a {.dataClass.}", procRetType)
-          let varInfo = wrenNames[retTypeId]
-          stmts.add(newCall("getVariable", ident"vm", newLit(0),
-                            newLit(varInfo.module), newLit(varInfo.variable)))
-          stmts.add(genForeignObjectInit(ident"vm", procRetType, call, 0))
-          stmts
-        # primitive return type
-        else:
-          newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
-                  ident"vm", newLit(0), call)
+      else: newCall(newTree(nnkBracketExpr, ident"setSlot", procRetType),
+                    ident"vm", newLit(0), call)
     callWithTry = genForeignErrorCheck(callWithReturn)
   # generate type check
-  let typeCheck = genTypeChecks(procParams, isStatic)
+  let typeCheck = genTypeChecks(ident"vm", isStatic, procParams)
   body.add(newIfStmt((cond: typeCheck, body: callWithTry))
            .add(newTree(nnkElse, genTypeError(theProc, wrenName,
                                               procParams.len, theProc))))
@@ -867,7 +937,7 @@ proc genInitGlue(vm, class, theProc: NimNode, kind: InitProcKind): NimNode =
     # of initializer
     if kind == ipInit: procParams[1..^1]
     else: procParams
-  let typeCheck = genTypeChecks(initParams, isStatic = true)
+  let typeCheck = genTypeChecks(ident"vm", isStatic = true, initParams)
   # finally, initialize or construct the object
   var initBody = newStmtList()
   case kind
