@@ -116,11 +116,11 @@ proc newWren*(): Wren =
     else: doAssert(false) # unreachable
   # modules
   config.loadModuleFn = proc (vm: RawVM, name: cstring): cstring {.cdecl.} =
-    var source = cast[Wren](wrenGetUserData(vm)).procLoadModule($name)
-    if source.len == 0:
-      source = """Fiber.abort("module doesn't exist")"""
-    let cssource = alloc0((source.len + 1) * sizeof(char))
-    cssource.copyMem(source[0].unsafeAddr, source.len * sizeof(char))
+    let
+      source = cast[Wren](wrenGetUserData(vm)).procLoadModule($name) 
+      cssource = alloc0((source.len + 1) * sizeof(char))
+    if source.len > 0:
+      cssource.copyMem(source[0].unsafeAddr, source.len * sizeof(char))
     result = cast[cstring](cssource)
   config.resolveModuleFn = proc (vm: RawVM, importer,
                                  name: cstring): cstring {.cdecl.} =
@@ -130,7 +130,9 @@ proc newWren*(): Wren =
       cssource = alloc0((source.len + 1) * sizeof(char))
     if source.len > 0:
       cssource.copyMem(source[0].unsafeAddr, source.len * sizeof(char))
-    result = cast[cstring](cssource)
+      result = cast[cstring](cssource)
+    else:
+      result = nil
   # FFI
   config.bindForeignMethodFn = proc (vm: RawVM, module: cstring,
                                      class: cstring, isStatic: bool,
