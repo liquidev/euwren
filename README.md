@@ -87,6 +87,67 @@ wren.run("""
 let classProgram = wren["main", "Program"]
 ```
 
+### Configuring the VM
+
+The VM can be configured in a few different ways, presented in following
+paragraphs.
+
+#### Redirecting output
+
+By default, the VM writes to `stdout`. Sometimes (eg. in a game), you may have
+a dedicated GUI console, and you'd like to redirect the VM output there.
+
+To do this, you can set the `onWrite` callback.
+```nim
+var vmOut = ""
+
+wren.onWrite do (text: string):
+  # ``text`` contains the text the VM wants to output.
+  # let's redirect it to ``vmOut``.
+  vmOut.add(text)
+
+wren.run("""
+  System.print("Testing output!")
+""")
+assert vmOut == "Testing output!\n"
+```
+
+#### Controlling imports
+
+By default, `import` cannot be used in scripts. It will throw an error, because
+there is no default implementation for imports.
+
+To make imports work, you must set the `onLoadModule` callback in the VM:
+```nim
+import os
+
+wren.onLoadModule do (name: string) -> string:
+  # onLoadModule must return the source code of the module called ``name``.
+  # a usual implementation that'd allow for loading from files would look
+  # like so:
+  result = readFile(name.addFileExt("wren"))
+```
+
+Sometimes, you may want to transform the module name before importing. That's
+where `onResolveModule` comes in:
+```nim
+import os
+
+wren.onResolveModule do (importer, name: string) -> string:
+  # this is a standard way of implementing relative imports:
+  result = importer/name
+```
+Apart from this, if your callback returns an empty string, an error will be
+raised saying that the module does not exist.
+```nim
+import os
+
+wren.onResolveModule do (importer, name: string) -> string:
+  result = importer/name
+  if not fileExists(result):
+    result = "" # module does not exist.
+```
+
 ### Calling methods
 
 Calling methods on Wren objects is done by first obtaining a call handle, and
