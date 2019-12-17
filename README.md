@@ -144,7 +144,7 @@ import os
 
 wren.onResolveModule do (importer, name: string) -> string:
   result = importer/name
-  if not fileExists(result):
+  if not fileExists(result.addFileExt("wren")):
     result = "" # module does not exist.
 ```
 
