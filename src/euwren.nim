@@ -117,7 +117,7 @@ proc newWren*(): Wren =
   # modules
   config.loadModuleFn = proc (vm: RawVM, name: cstring): cstring {.cdecl.} =
     let
-      source = cast[Wren](wrenGetUserData(vm)).procLoadModule($name) 
+      source = cast[Wren](wrenGetUserData(vm)).procLoadModule($name)
       cssource = alloc0((source.len + 1) * sizeof(char))
     if source.len > 0:
       cssource.copyMem(source[0].unsafeAddr, source.len * sizeof(char))
@@ -848,10 +848,10 @@ proc resolveOverload(procSym: NimNode, overloaded: bool,
             "provide the correct overload's parameters", procSym)
     result = getOverload(procSym, params)
 
-macro addProcAux*(vm: Wren, module: string, classSym: typed, className: string,
-                  procSym: typed, wrenName: static string,
-                  overloaded, isGetter: static bool,
-                  params: varargs[typed]): untyped =
+macro addProcAux(vm: Wren, module: string, classSym: typed, className: string,
+                 procSym: typed, wrenName: static string,
+                 overloaded, isGetter: static bool,
+                 params: varargs[typed]): untyped =
   ## Generates code which binds a procedure to the provided Wren instance.
   ## This is an implementation detail and you should not use it in your code.
 
@@ -1044,11 +1044,11 @@ proc genGetSet(vm, class, module, identDefs: NimNode,
         getProc = genFieldGetter(getSym, class, def[1], identDefs[^2])
         setProc = genFieldSetter(setSym, class, def[1], identDefs[^2])
       result.add([getProc, setProc])
-      result.add(newCall("addProcAux", vm, module, class, newLit(wrenClass),
-                         getSym, newLit(def[1].strVal),
+      result.add(newCall(bindSym"addProcAux", vm, module, class,
+                         newLit(wrenClass), getSym, newLit(def[1].strVal),
                          newLit(false), newLit(true)))
-      result.add(newCall("addProcAux", vm, module, class, newLit(wrenClass),
-                         setSym, newLit(def[1].strVal & '='),
+      result.add(newCall(bindSym"addProcAux", vm, module, class,
+                         newLit(wrenClass), setSym, newLit(def[1].strVal & '='),
                          newLit(false), newLit(false)))
 
 proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
@@ -1074,11 +1074,11 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
         elif branch.kind == nnkOfBranch:
           result.add(genGetSet(vm, class, module, branch[1], wrenClass))
 
-macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
-                   initProc, destroyProc: typed,
-                   initProcKind: static InitProcKind,
-                   initOverloaded: static bool,
-                   initParams: varargs[typed]): untyped =
+macro addClassAux(vm: Wren, module: string, class: typed, wrenClass: string,
+                  initProc, destroyProc: typed,
+                  initProcKind: static InitProcKind,
+                  initOverloaded: static bool,
+                  initParams: varargs[typed]): untyped =
   ## Generates code which binds a new class to the provided Wren instance.
   ## This is an implementation detail and you should not use it in your code.
 
@@ -1104,7 +1104,7 @@ macro addClassAux*(vm: Wren, module: string, class: typed, wrenClass: string,
   # save the Wren type name
   wrenNames[getTypeId(class)] = (module.strVal, wrenClass.strVal)
 
-macro saveWrenName*(class: typed, module, wrenClass: string) =
+macro saveWrenName(class: typed, module, wrenClass: string) =
   ## Implementation detail; do not use in your code.
   wrenNames[getTypeId(class)] = (module.strVal, wrenClass.strVal)
 
@@ -1126,7 +1126,7 @@ proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
   if theProc.kind in {nnkIdent, nnkAccQuoted}:
     # defer the binding to addProcAux
     # XXX: find a way which doesn't require addProcAux to be public
-    result = newCall(ident"addProcAux", vm, module,
+    result = newCall(bindSym"addProcAux", vm, module,
                      classSym, newLit(wrenClass),
                      newCall("typeof", theProc), newLit(wrenName),
                      newLit(false), newLit(isGetter))
@@ -1140,14 +1140,14 @@ proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
                      newLit(true), newLit(isGetter)]
     # bind the overloaded proc
     callArgs.add(getOverloadParams(theProc))
-    result = newCall(ident"addProcAux", callArgs)
+    result = newCall(bindSym"addProcAux", callArgs)
 
 proc getAddClassAuxCall(vm, module, class: NimNode, wrenClass: string,
                         initProc, destroyProc: NimNode,
                         initProcKind: InitProcKind): NimNode =
   # non-overloaded or nil init proc
   if initProc == nil or initProc.kind == nnkIdent:
-    result = newCall(ident"addClassAux", vm, module, class, newLit(wrenClass),
+    result = newCall(bindSym"addClassAux", vm, module, class, newLit(wrenClass),
                      initProc, destroyProc, newLit(initProcKind), newLit(false))
   # overloaded init proc
   else:
@@ -1155,7 +1155,7 @@ proc getAddClassAuxCall(vm, module, class: NimNode, wrenClass: string,
                      initProc[0], destroyProc,
                      newLit(initProcKind), newLit(true)]
     callArgs.add(getOverloadParams(initProc))
-    result = newCall(ident"addClassAux", callArgs)
+    result = newCall(bindSym"addClassAux", callArgs)
 
 proc isWrenIdent(str: string): bool =
   ## Checks if the given string represents a valid Wren identifier.
@@ -1231,14 +1231,16 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         procInit = p[1]
         initProcKind = ipInit
         isObject = true
-        stmts.add(newCall("saveWrenName", class, module, newLit(wrenClass)))
+        stmts.add(newCall(bindSym"saveWrenName", class, module,
+                          newLit(wrenClass)))
       of "new":
         if procInit != nil:
           error("class may only have one constructing proc", p)
         procInit = p[1]
         initProcKind = ipNew
         isObject = true
-        stmts.add(newCall("saveWrenName", class, module, newLit(wrenClass)))
+        stmts.add(newCall(bindSym"saveWrenName", class, module,
+                          newLit(wrenClass)))
       of "destroy":
         procDestroy = p[1]
       of "get":
@@ -1257,7 +1259,8 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
           of "dataClass":
             # make the class a 'data class' (an object without a constructor)
             isObject = true
-            stmts.add(newCall("saveWrenName", class, module, newLit(wrenClass)))
+            stmts.add(newCall(bindSym"saveWrenName", class, module,
+                              newLit(wrenClass)))
             stmts.add(getAddClassAuxCall(vm, module, class, wrenClass,
                                          procInit, procDestroy, initProcKind))
     elif p.kind == nnkDiscardStmt: discard # discard statement
@@ -1275,7 +1278,7 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
   stmts.add(newCall("add", ident"modSrc", newLit("}\n")))
   result = newBlockStmt(stmts)
 
-macro genEnumAux*(theEnum: typed, wrenName, prefix: string): untyped =
+macro genEnumAux(theEnum: typed, wrenName, prefix: string): untyped =
   ## Generates the code required to bind to a Wren VM. This is an implementation
   ## detail used by ``foreign()``, and may only be used in the context created
   ## by it; thus, you should not use it in your code.
@@ -1320,7 +1323,8 @@ proc getGenEnumAuxCall(theEnum: NimNode, wrenName, prefix: string): NimNode =
   ## Create a call to ``getEnumAux``, binding the given enum, with the given
   ## ``wrenName``, and optionally a ``prefix`` to be stripped from the enum. If
   ## ``prefix`` is ``""``, nothing will be stripped.
-  result = newCall("genEnumAux", theEnum, newLit(wrenName), newLit(prefix))
+  result = newCall(bindSym"genEnumAux", theEnum, newLit(wrenName),
+                   newLit(prefix))
 
 proc genEnumBinding(decl: NimNode): NimNode =
   ## Generates an enum binding from the AST of ``decl``. This is part of the
