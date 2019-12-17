@@ -87,6 +87,26 @@ wren.run("""
 let classProgram = wren["main", "Program"]
 ```
 
+### Calling methods
+
+Calling methods on Wren objects is done by first obtaining a call handle, and
+then calling the method.
+
+To obtain a call handle, use the curly brace operator. Then, to call the
+method, use `call()`.
+```nim
+# the convention for naming the variable:
+# method<name><number of arguments>
+# this convention is the preferred naming conventions for variables and fields
+# that store Wren call handles, but you're free to use any convention you want
+let methodRun0 = wren{"run()"}
+# the second parameter is the call handle to the method, the third is the
+# receiver of the method, and the rest is the parameters to pass to
+# the method.
+# when the method is static, the receiver is the class of the method
+wren.call(methodRun0, classProgram)
+```
+
 ### Configuring the VM
 
 The VM can be configured in a few different ways, presented in following
@@ -146,26 +166,6 @@ wren.onResolveModule do (importer, name: string) -> string:
   result = importer/name
   if not fileExists(result.addFileExt("wren")):
     result = "" # module does not exist.
-```
-
-### Calling methods
-
-Calling methods on Wren objects is done by first obtaining a call handle, and
-then calling the method.
-
-To obtain a call handle, use the curly brace operator. Then, to call the
-method, use `call()`.
-```nim
-# the convention for naming the variable:
-# method<name><number of arguments>
-# this convention is the preferred naming conventions for variables and fields
-# that store Wren call handles, but you're free to use any convention you want
-let methodRun0 = wren{"run()"}
-# the second parameter is the call handle to the method, the third is the
-# receiver of the method, and the rest is the parameters to pass to
-# the method.
-# when the method is static, the receiver is the class of the method
-wren.call(methodRun0, classProgram)
 ```
 
 ### Binding procs
