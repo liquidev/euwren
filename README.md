@@ -13,9 +13,6 @@ the API as simple as listing all the things you need in Wren. While it may not
 be the fastest of wrappers, it's not the primary goal. It's the end user
 experience that really counts.
 
-euwren is still WIP, so not all features are implemented. Those that are
-unavailable are marked with `(NYI)`.
-
 ## Features
 
 - Syntactically simple
@@ -73,7 +70,8 @@ let myInt = wren["main", "myInt", int]
 assert myInt == 2
 ```
 
-Any number type conversions between Nim and Wren are performed automatically.
+Any number/enum type conversions between Nim and Wren are performed
+automatically.
 
 To retrieve a Wren object, eg. a class, use the subscript operator with two
 arguments.
@@ -92,8 +90,7 @@ let classProgram = wren["main", "Program"]
 ### Calling methods
 
 Calling methods on Wren objects is done by first obtaining a call handle, and
-then calling the method. Note that the Wren VM **is not reentrant**, meaning
-you cannot call Wren in a foreign method.
+then calling the method.
 
 To obtain a call handle, use the curly brace operator. Then, to call the
 method, use `call()`.
@@ -156,6 +153,31 @@ import "math" for Math
 System.print(Math.add(2, 2)) // Output: 4
 ```
 
+Any exceptions raised from Nim procedures will abort the fiber instead of
+crashing the program:
+```nim
+proc oops() =
+  raise newException(Defect, "oops! seems you called oops().")
+
+wren.foreign("errors"):
+  Error:
+    oops
+wren.ready()
+```
+```js
+import "errors" for Error
+// we can use the standard Wren error handling mechanisms to catch our error.
+var theError = Fiber.new {
+  Error.oops()
+}.try()
+System.print(theError)
+```
+```
+oops! seems you called oops(). [Defect]
+```
+When `not defined(release) and not defined(danger)`, a stack trace pointing to
+where the error was raised will be printed.
+
 Nim procedures can accept `WrenRef` as arguments. This allows Wren objects to
 be passed to Nim:
 ```nim
@@ -182,6 +204,9 @@ Engine.onTick {
   System.println("Hello from callback!")
 }
 ```
+
+Note that the Wren VM **is not reentrant**, meaning you cannot call Wren in
+a foreign method.
 
 ### Binding objects
 
