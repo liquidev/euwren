@@ -36,4 +36,4 @@ jobs:
         steps.cacheNimble.outputs.cache-hit != true
 
     - name: Run all tests
-      run: nimble -y test
+      run: nim c -r tests/teuwren
