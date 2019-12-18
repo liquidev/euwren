@@ -19,7 +19,7 @@ experience that really counts.
 - Supports proc, object, and enum binding
 - Does type checks for procedures
 - Supports operator overloading
-- Automatically generates Wren glue code with declarations (experimental)
+- Automatically generates Wren glue code with declarations
 
 ## Installing
 
