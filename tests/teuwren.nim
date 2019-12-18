@@ -1,3 +1,4 @@
+import segfaults
 import unittest
 
 import euwren
@@ -103,7 +104,7 @@ suite "foreign()":
     proc goal() =
       state = "passed!"
     wren.foreign("test"):
-      Test:
+      [Test]:
         goal
     wren.ready()
     wren.run("""
@@ -115,7 +116,7 @@ suite "foreign()":
     proc getGreeting(target: string): string =
       result = "Hello, " & target & "!"
     wren.foreign("test"):
-      Greeting:
+      [Greeting]:
         getGreeting -> "get"
         getGreeting -> `[]`
     wren.ready()
@@ -129,7 +130,7 @@ suite "foreign()":
     proc add(a, b: int): int = a + b
     proc add(a, b, c: int): int = a + b + c
     wren.foreign("test"):
-      Adder:
+      [Adder]:
         add(int, int)
         add(int, int, int)
     wren.ready()
@@ -154,12 +155,12 @@ suite "foreign()":
     proc printC(c: C) = vmOut.add("got C\n")
     wren.foreign("test"):
       A:
-        [new] newA
+        *newA -> new
       B:
-        [new] newB
+        *newB -> new
       C:
-        [new] newC
-      Test:
+        *newC -> new
+      [Test]:
         printA
         printB
         printC
@@ -189,7 +190,7 @@ suite "foreign()":
       raise newException(Exception, "test error")
     proc ok() = success = true
     wren.foreign("test"):
-      Test:
+      [Test]:
         exceptionTest
         ok
     wren.ready()
@@ -212,7 +213,7 @@ suite "foreign()":
   test "default param handling":
     proc defaultParams(x = 2): int = x + 1
     wren.foreign("test"):
-      Test:
+      [Test]:
         defaultParams
     wren.ready()
     wren.run("""
@@ -228,7 +229,7 @@ suite "foreign()":
         for i in 1..4:
           check x[i] == i
       wren.foreign("test1"):
-        Array:
+        [Array]:
           testArray0 -> test0
           testArray1 -> test1
       wren.ready()
@@ -253,7 +254,7 @@ suite "foreign()":
           [2.0, 3.0, 4.0]
         ]
       wren.foreign("test2"):
-        Matrix:
+        [Matrix]:
           testMatrix -> test
       wren.ready()
       wren.run("""
@@ -275,8 +276,8 @@ suite "foreign()":
         ]
       wren.foreign("test3"):
         Test:
-          [new] newTest
-        Objects:
+          *newTest -> new
+        [Objects]:
           testObjects -> test
       wren.ready()
       wren.run("""
@@ -293,7 +294,7 @@ suite "foreign()":
       proc getArray(): array[4, int] =
         result = [1, 2, 3, 4]
       wren.foreign("test1"):
-        Array:
+        [Array]:
           getArray -> get
       wren.ready()
       wren.run("""
@@ -312,7 +313,7 @@ suite "foreign()":
           [3.0, 4.0, 5.0]
         ]
       wren.foreign("test2"):
-        Matrix:
+        [Matrix]:
           getMatrix -> get
       wren.ready()
       wren.run("""
@@ -333,7 +334,7 @@ suite "foreign()":
         if doCheck:
           check x == @[1, 2, 3]
       wren.foreign("test1"):
-        Seq:
+        [Seq]:
           testSeq -> test
       wren.ready()
       wren.run("""
@@ -352,7 +353,7 @@ suite "foreign()":
           @[5, 4, 3]
         ]
       wren.foreign("test2"):
-        NestedSeq:
+        [NestedSeq]:
           testNestedSeq -> test
       wren.ready()
       wren.run("""
@@ -378,7 +379,7 @@ suite "foreign()":
                           privateField: "access denied")
     wren.foreign("test"):
       TestObject:
-        [new] newTestObject
+        *newTestObject -> new
     wren.ready()
     wren.run("""
       import "test" for TestObject
@@ -401,7 +402,7 @@ suite "foreign()":
       result = ObjectWithVerboseName()
     wren.foreign("test"):
       ObjectWithVerboseName -> Verbose:
-        [new] newObjectWithVerboseName
+        *newObjectWithVerboseName -> new
     wren.ready()
     wren.run("""
       import "test" for Verbose
@@ -415,8 +416,8 @@ suite "foreign()":
     proc greeting(greeter: Greeter): string = "Hello, " & greeter.target & "!"
     wren.foreign("test"):
       Greeter:
-        [new] newGreeter
-        [get] greeting
+        *newGreeter -> new
+        ?greeting
     wren.ready()
     wren.run("""
       import "test" for Greeter
@@ -424,26 +425,6 @@ suite "foreign()":
       System.print(x.greeting)
     """)
     check vmOut == "Hello, world!\n"
-  test "{.dataClass.}":
-    type
-      Vec2 = object
-        x*, y*: float
-    proc vec2(x, y: float): Vec2 = Vec2(x: x, y: y)
-    proc `$`(a: Vec2): string = "[" & $a.x & ", " & $a.y & "]"
-    wren.foreign("test"):
-      Vec2:
-        {.dataClass.}
-        [get] `$` -> toString
-      Vec:
-        vec2 -> new
-    wren.ready()
-    wren.run("""
-      import "test" for Vec
-      var a = Vec.new(10, 20)
-      a.x = 30
-      System.print(a)
-    """)
-    check vmOut == "[30.0, 20.0]\n"
   test "`var` receiver":
     type
       Counter = object
@@ -453,9 +434,9 @@ suite "foreign()":
     proc count(counter: Counter): int = counter.count
     wren.foreign("count"):
       Counter:
-        [new] newCounter
+        *newCounter -> new
         inc(var Counter)
-        [get] count
+        ?count
     wren.ready()
     wren.run("""
       import "count" for Counter
@@ -473,7 +454,7 @@ suite "foreign()":
     proc something(): RefObj = RefObj(x: 2)
     wren.foreign("test"):
       RefObj:
-        [new] newRefObj
+        *newRefObj -> new
         something
     wren.ready()
     wren.run("""
