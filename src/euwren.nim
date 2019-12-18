@@ -758,7 +758,7 @@ proc genForeignErrorCheck(expr: NimNode): NimNode =
   branchStmts.add(newCall("add", msgSym,
                           newTree(nnkDotExpr, errSym, ident"name")))
   branchStmts.add(newCall("add", msgSym, newLit(']')))
-  when not defined(release) and not defined(danger):
+  when compileOption("stacktrace"):
     branchStmts.add(newCall("add", msgSym, newLit("\nnim stack trace:\n")))
     branchStmts.add(newCall("add", msgSym, newCall("getStackTrace", errSym)))
   branchStmts.add(newCall("abortFiber", ident"vm", msgSym))
