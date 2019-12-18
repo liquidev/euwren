@@ -861,10 +861,6 @@ macro addProcAux(vm: Wren, module: string, className: string,
     procSym = procSym[0]
   # find the correct overload of the procedure, if applicable
   var theProc = resolveOverload(procSym, overloaded, params)
-  # get some metadata about the proc
-  let
-    procImpl = theProc.getImpl
-    procParams = getParamList(procImpl[3])
   # generate glue and register the procedure in the Wren instance
   let
     classLit = className
@@ -1007,11 +1003,6 @@ proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
     callArgs.add(getOverloadParams(theProc))
     result = newCall(bindSym"addProcAux", callArgs)
 
-proc getAddClassAuxCall(vm, module, class: NimNode, wrenClass: string,
-                        destroyProc: NimNode): NimNode =
-  result = newCall(bindSym"addClassAux", vm, module, class, newLit(wrenClass),
-                   destroyProc) 
-
 proc isWrenIdent(str: string): bool =
   ## Checks if the given string represents a valid Wren identifier.
   ## Wren identifiers have different rules from Nim identitiers—namely, the can
@@ -1088,7 +1079,11 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         isGetter = false
       if nim.kind == nnkPrefix:
         case nim[0].strVal
-        of "*": isStatic = true
+        of "*":
+          isStatic = true
+          if isNamespace:
+            warning("explicit static marker in namespace; " &
+                    "did you mean to create an object?", nim[0])
         of "?": isGetter = true
         of "*?", "?*":
           isStatic = true
