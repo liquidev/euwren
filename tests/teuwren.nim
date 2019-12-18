@@ -461,6 +461,21 @@ suite "foreign()":
       import "test" for RefObj
       var x = RefObj.new(2)
     """)
+  test "tuples":
+    type
+      Rect = tuple[x, y, width, height: float]
+    proc checkRect(r: Rect) =
+      check r == (x: 1.0, y: 2.0, width: 3.0, height: 4.0)
+    wren.foreign("test"):
+      Rect: discard
+      [Test]:
+        checkRect
+    wren.ready()
+    wren.run("""
+      import "test" for Rect, Test
+      var r = Rect.new(1, 2, 3, 4)
+      Test.checkRect(r)
+    """)
 
   #--
   # enums

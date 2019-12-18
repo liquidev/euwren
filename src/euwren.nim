@@ -301,7 +301,7 @@ proc getSlot*[T](vm: RawVM, slot: int): T =
   elif T is WrenRef:
     result = cast[Wren](wrenGetUserData(vm))
       .newRef(wrenGetSlotHandle(vm, slot.cint))
-  elif T is object | ref:
+  elif T is object | tuple | ref:
     result = getSlotForeign[T](vm, slot)[]
   else:
     {.error: "unsupported type for slot retrieval: " & $T.}
@@ -348,7 +348,7 @@ proc setSlot*[T](vm: RawVM, slot: int, val: T) =
       wrenInsertInList(vm, slot.cint, -1, cint(slot + 1))
   elif T is WrenRef:
     wrenSetSlotHandle(vm, slot.cint, val.handle)
-  elif T is object | ref:
+  elif T is object | tuple | ref:
     let varInfo = wrenVar(typeId(genericParam(T)))
     vm.getVariable(slot, varInfo[0], varInfo[1])
     foreignObjectInit(vm, genericParam(T), val, slot)
@@ -509,7 +509,8 @@ proc getParent(typeSym: NimNode): NimNode =
   ## Get the parent type for the given type symbol, or ``nil`` if the type has
   ## no parent type.
   var impl = typeSym.getImpl[2]
-  impl.expectKind({nnkRefTy, nnkObjectTy})
+  if impl.kind == nnkTupleTy: return nil # tuples don't have parents
+  impl.expectKind({nnkRefTy, nnkObjectTy, nnkTupleTy})
   while impl.kind == nnkRefTy:
     impl = impl[0]
   impl.expectKind(nnkObjectTy)
@@ -587,7 +588,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
   const
     Nums = {ntyInt..ntyUint64}
     Lists = {ntyArray, ntySequence}
-    Foreign = {ntyObject, ntyRef}
+    Foreign = {ntyObject, ntyRef, ntyTuple}
   let ty = ty.flattenTypeDesc
   # generate the check
   let
@@ -966,6 +967,26 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
         elif branch.kind == nnkOfBranch:
           result.add(genGetSet(vm, class, module, branch[1], wrenClass))
 
+proc genTupleConstrGlue(vm, class, module: NimNode,
+                        wrenClass: string): NimNode =
+  ## Generates a glue proc that constructs a tuple.
+  result = newStmtList()
+  let
+    tupleImpl = class.getImpl[2]
+    constrSym = genSym(nskProc, class.repr & "_init")
+  var
+    constrProc = newProc(constrSym, params = [class])
+    tupleConstr = newNimNode(nnkPar)
+  for defs in tupleImpl:
+    constrProc.params.add(defs)
+    for field in defs[0..^3]:
+      tupleConstr.add(newTree(nnkExprColonExpr, field, field))
+  constrProc.body.add(newTree(nnkAsgn, ident"result", tupleConstr))
+  result.add(constrProc)
+  result.add(newCall(bindSym"addProcAux", vm, module, newLit(wrenClass),
+                     constrSym, newLit("new"),
+                     newLit(false), newLit(true), newLit(false)))
+
 macro addClassAux(vm: Wren, module: string, class: typed,
                   wrenClass: string): untyped =
   ## Generates code which binds a new class to the provided Wren instance.
@@ -975,6 +996,8 @@ macro addClassAux(vm: Wren, module: string, class: typed,
   let destroyGlue = genDestroyGlue(vm, class)
   result = newStmtList()
   result.add(genFieldGlue(vm, class, module, wrenClass.strVal))
+  if class.flattenTypeDesc.typeKind == ntyTuple:
+    result.add(genTupleConstrGlue(vm, class, module, wrenClass.strVal))
   result.add(newCall("addClass", vm, module, wrenClass, destroyGlue))
 
 macro saveWrenName(class: typed, module, wrenClass: string) =
