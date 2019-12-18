@@ -13,9 +13,27 @@ jobs:
     steps:
     - name: Checkout euwren
       uses: actions/checkout@v1
+
+    - name: Cache ~/.choosenim
+      id: cacheChoosenim
+      uses: actions/cache@v1
+      with:
+        path: ~/.choosenim
+        key: ${{ runner.os }}-choosenim-${{ matrix.nim_version }}
+    - name: Cache ~/.nimble
+      id: cacheNimble
+      uses: actions/cache@v1
+      with:
+        path: ~/.choosenim
+        key: ${{ runner.os }}-choosenim-${{ matrix.nim_version }}
+
     - name: Setup Nim environment
       uses: jiro4989/setup-nim-action@v1.0.1
       with:
         nim-version: ${{ matrix.nim_version }}
+      if: >
+        steps.cacheChoosenim.outputs.cache-hit != true &&
+        steps.cacheNimble.outputs.cache-hit != true
+
     - name: Run all tests
-      run: nimble test
+      run: nimble -y test
