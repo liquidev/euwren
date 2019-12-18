@@ -1,0 +1,23 @@
+name: CI
+
+on: [push]
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} with Nim ${{ matrix.nim_version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # euwren should be OS-agnostic, but better be safe than sorry
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+        nim_version: ["1.0.0", "1.0.2", "1.0.4", "stable"]
+    
+    steps:
+    - name: Checkout euwren
+      uses: actions/checkout@v1
+    - name: Setup Nim environment
+      uses: jiro4989/setup-nim-action@v1.0.1
+      with:
+        nim-version: ${{ matrix.nim_version }}
+    - name: Run all tests
+      run: nimble test
