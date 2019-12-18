@@ -179,7 +179,7 @@ proc hello() =
 
 wren.foreign("nim"):
   # create a namespace 'Nim' that will hold our proc
-  Nim:
+  [Nim]:
     # bind the proc 'hello'
     hello
 # ready() must be called to ready the VM for code execution after any
@@ -200,7 +200,7 @@ proc subtract(a, b: int): int = a - b
 # foreign() accepts the name of the module we want to bind
 wren.foreign("math"):
   # we create a namespace 'Math' for our procs
-  Math:
+  [Math]:
     # procs can be overloaded by arity, but not by parameter type
     # (this is not enforced, so be careful!)
     add(int, int)
@@ -221,7 +221,7 @@ proc oops() =
   raise newException(Defect, "oops! seems you called oops().")
 
 wren.foreign("errors"):
-  Error:
+  [Error]:
     oops
 wren.ready()
 ```
@@ -236,7 +236,7 @@ System.print(theError)
 ```
 oops! seems you called oops(). [Defect]
 ```
-When `not defined(release) and not defined(danger)`, a stack trace pointing to
+When `compileOption("stacktrace") == on`, a stack trace pointing to
 where the error was raised will be printed.
 
 Nim procedures can accept `WrenRef` as arguments. This allows Wren objects to
@@ -250,7 +250,7 @@ proc onTick(callback: WrenRef) =
   onTickFn = callback
 
 wren.foreign("engine"):
-  Engine:
+  [Engine]:
     onTick
 wren.ready()
 
@@ -272,7 +272,7 @@ a foreign method.
 ### Binding objects
 
 Binding objects is very similar to procs. All *public* object fields are
-exported to Wren (NYI).
+exported to Wren.
 
 If a proc returns an object, the class for that object must be declared *before*
 the proc is declared.
@@ -294,16 +294,16 @@ proc more(foo: var Foo) =
 proc count(foo: Foo) = foo.count
 
 wren.foreign("foo"):
-  # objects can be aliased, just like procs
+  # objects are declared without [] and can be aliased, just like procs
   Foo -> Bar:
-    # an object must have exactly one constructor or initializer, and it must
-    # be the first thing that's bound
-    # adding one changes the namespace to a foreign object
-    # a constructor creates an object from scratch, an initializer initializes
-    # an object in place
-    [new] initFoo
+    # the * operator makes the bound proc static
+    # this is not needed in namespaces, and produces a warning
+    *initFoo -> new
+    # procs can be bound as usual
     more
-    [get] count
+    # ? binds the proc for use with getter syntax
+    # (``x.count`` instead of ``x.count()``)
+    ?count
 wren.ready()
 ```
 ```js
@@ -312,37 +312,6 @@ import "foo" for Bar
 var foo = Bar.new("Thing")
 foo.more()
 System.print(foo.count)
-```
-
-If an object stores some foreign data, but does not have a constructor, the
-`{.dataClass.}` pragma must be used.
-
-```nim
-type
-  Vec2 = object
-    x*, y*: float
-
-proc `$`(v: Vec2): string = "(" & $v.x & ", " & $v.y & ")"
-proc `+`(a, b: Vec2): Vec2 = Vec2(x: a.x + b.x, y: a.y + b.y)
-
-proc vec2(x, y: float): Vec2 = Vec2(x: x, y: y)
-
-wren.foreign("vec"):
-  Vec2:
-    {.dataClass.}
-    `$`(Vec2) -> toString # methods can still be declared normally
-    `+`(Vec2, Vec2)
-  Vec:
-    vec2 -> new
-```
-```js
-import "vec" for Vec
-
-var a = Vec.new(10, 20)
-var b = Vec.new(20, 30)
-var c = a + b
-
-System.print(c)
 ```
 
 ### Binding enums
