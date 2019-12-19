@@ -312,13 +312,15 @@ proc newForeign*(vm: RawVM, slot: int, size: Natural, classSlot = 0): pointer =
 proc getVariable*(vm: RawVM, slot: int, module, variable: string) =
   wrenGetVariable(vm, module, variable, slot.cint)
 
-proc getTypeId(typeSym: NimNode): uint16
-macro typeId(typeSym: typed): uint16 =
-  result = newLit(getTypeId(typeSym))
+var wrenNames {.compileTime.}: Table[uint16, ModuleVar] ## \
+  ## Maps unique type IDs to their corresponding variables in bound modules.
 
-proc getWrenVar(id: uint16): ModuleVar {.compileTime.}
-macro wrenVar(id: uint16): untyped =
-  let v = getWrenVar(id.intVal.uint16)
+proc getTypeId(typeSym: NimNode): uint16
+macro wrenVar(T: typed): untyped =
+  let id = getTypeId(T)
+  if id notin wrenNames:
+    error("type <" & T.repr & "> is unknown to the VM", T)
+  let v = wrenNames[id]
   result = newTree(nnkPar, newLit(v.module), newLit(v.variable))
 
 proc genForeignObjectInit(vm, objType, expr, slot: NimNode,
@@ -349,7 +351,7 @@ proc setSlot*[T](vm: RawVM, slot: int, val: T) =
   elif T is WrenRef:
     wrenSetSlotHandle(vm, slot.cint, val.handle)
   elif T is object | tuple | ref:
-    let varInfo = wrenVar(typeId(genericParam(T)))
+    let varInfo = wrenVar(genericParam(T))
     vm.getVariable(slot, varInfo[0], varInfo[1])
     foreignObjectInit(vm, genericParam(T), val, slot)
   else:
@@ -479,7 +481,7 @@ proc getParamList(formalParams: NimNode): seq[NimNode] =
   for identDefs in formalParams[1..^1]:
     let ty =
       if identDefs[^2].kind != nnkEmpty: identDefs[^2]
-      else: identDefs[^1].getTypeInst
+      else: newTree(nnkTypeOfExpr, identDefs[^1])
     for i in 0..identDefs.len - 3:
       result.add(ty)
 
@@ -489,9 +491,21 @@ proc getParamNames(formalParams: NimNode): seq[string] =
     for name in identDefs[0..^3]:
       result.add(name.strVal)
 
+proc flattenTypeDesc(typeSym: NimNode): NimNode =
+  result = typeSym
+  while result.typeKind == ntyTypeDesc:
+    result = result.getTypeInst[1]
+
+proc eqType(a, b: NimNode): bool =
+  ## Compares two ``NimNodes`` to determine if they represent the same type.
+  ## Better than ``sameType``, because it deals with ``typedesc``s properly.
+  result = sameType(a.flattenTypeDesc, b.flattenTypeDesc)
+
 proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
   ## Finds an appropriate proc overload based on the provided parameters.
+  echo "Finding overload"
   for overload in choices:
+    echo "Checking ", overload.treeRepr
     block check:
       let
         impl = overload.getImpl
@@ -500,7 +514,8 @@ proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
       # compare ``argTypes`` with ``params``
       if params[0].len != argTypes.len: break check
       for i, param in params[0]:
-        if argTypes[i] != param:
+        echo argTypes[i].treerepr, "; ", param.treerepr, "; same? ", eqType(argTypes[i], param)
+        if not eqType(argTypes[i], param):
           break check
       return overload
   error("couldn't find overload for given parameter types")
@@ -523,18 +538,11 @@ var
     ## Maps type hashes to unique integer IDs
   typeNames {.compileTime.}: Table[uint16, string]
     ## Maps the unique IDs to actual names
-  wrenNames {.compileTime.}: Table[uint16, ModuleVar]
-    ## Maps the unique IDs to Wren names
   parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
     ## Maps the unique IDs to their parents' IDs
 
 proc getWrenVar(id: uint16): ModuleVar {.compileTime.} =
   result = wrenNames[id]
-
-proc flattenTypeDesc(typeSym: NimNode): NimNode =
-  result = typeSym
-  while result.typeKind == ntyTypeDesc:
-    result = result.getTypeInst[1]
 
 proc getTypeId(typeSym: NimNode): uint16 =
   ## Get a unique type ID for the given type symbol.
@@ -586,7 +594,7 @@ proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
 proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
   # type kind sets
   const
-    Nums = {ntyInt..ntyUint64}
+    Nums = {ntyInt..ntyUint64, ntyEnum}
     Lists = {ntyArray, ntySequence}
     Foreign = {ntyObject, ntyRef, ntyTuple}
   let ty = ty.flattenTypeDesc
@@ -1001,6 +1009,8 @@ macro addClassAux(vm: Wren, module: string, class: typed,
   result.add(newCall("addClass", vm, module, wrenClass, destroyGlue))
 
 macro saveWrenName(class: typed, module, wrenClass: string) =
+  when defined(euwrenDumpClasses):
+    echo "[euwren] ", escape(module.strVal), ".", wrenClass.strVal
   wrenNames[getTypeId(class)] = (module.strVal, wrenClass.strVal)
 
 proc getOverloadParams(def: NimNode): seq[NimNode] =
