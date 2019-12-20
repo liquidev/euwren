@@ -214,6 +214,25 @@ import "math" for Math
 System.print(Math.add(2, 2)) // Output: 4
 ```
 
+If a proc has a parameter without a type, but with a default parameter that is
+not a literal, you must use `_`:
+```nim
+var myNumber = 2
+proc annoyingProc(a = myNumber) = discard
+
+wren.foreign("wildcard"):
+  [Wildcard]:
+    annoyingProc(_)
+```
+This is due to a limitation in Nim. For some reason, default parameters are
+untyped, which doesn't let the overload resolution compare the types properly.
+This is fine, unless you use a non-literal type for the default parameter, eg.
+a variable or `seq`. You don't have to do this if the type is specified
+explicitly, like here:
+```nim
+proc notSoAnnoyingProc(a: int = myNumber) = discard
+```
+
 Any exceptions raised from Nim procedures will abort the fiber instead of
 crashing the program:
 ```nim
