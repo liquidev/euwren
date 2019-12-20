@@ -132,7 +132,7 @@ suite "foreign()":
     wren.foreign("test"):
       [Adder]:
         add(int, int)
-        add(int, int, int)
+        add(int, int, _)
     wren.ready()
     wren.run("""
       import "test" for Adder

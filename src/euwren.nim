@@ -481,7 +481,9 @@ proc getParamList(formalParams: NimNode): seq[NimNode] =
   for identDefs in formalParams[1..^1]:
     let ty =
       if identDefs[^2].kind != nnkEmpty: identDefs[^2]
-      else: newTree(nnkTypeOfExpr, identDefs[^1])
+      else:
+        if identDefs[^1].kind != nnkIdent: identDefs[^1].getType
+        else: newEmptyNode()
     for i in 0..identDefs.len - 3:
       result.add(ty)
 
@@ -499,13 +501,12 @@ proc flattenTypeDesc(typeSym: NimNode): NimNode =
 proc eqType(a, b: NimNode): bool =
   ## Compares two ``NimNodes`` to determine if they represent the same type.
   ## Better than ``sameType``, because it deals with ``typedesc``s properly.
-  result = sameType(a.flattenTypeDesc, b.flattenTypeDesc)
+  result = sameType(a.flattenTypeDesc, b.flattenTypeDesc) or
+           a.kind == nnkNilLit or b.kind == nnkNilLit
 
 proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
   ## Finds an appropriate proc overload based on the provided parameters.
-  echo "Finding overload"
   for overload in choices:
-    echo "Checking ", overload.treeRepr
     block check:
       let
         impl = overload.getImpl
@@ -514,7 +515,6 @@ proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
       # compare ``argTypes`` with ``params``
       if params[0].len != argTypes.len: break check
       for i, param in params[0]:
-        echo argTypes[i].treerepr, "; ", param.treerepr, "; same? ", eqType(argTypes[i], param)
         if not eqType(argTypes[i], param):
           break check
       return overload
@@ -1016,7 +1016,10 @@ macro saveWrenName(class: typed, module, wrenClass: string) =
 proc getOverloadParams(def: NimNode): seq[NimNode] =
   ## Returns the overload's parameters as a raw seq.
   for param in def[1..^1]:
-    result.add(param)
+    if param.kind == nnkIdent and param.strVal == "_":
+      result.add(newNilLit())
+    else:
+      result.add(param)
 
 proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
                        theProc: NimNode, wrenName: string,
