@@ -1167,6 +1167,12 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
           isStatic = true
           isGetter = true
         theProc = nim[1]
+      elif nim.kind in {nnkPrefix, nnkDo} and nim[^1].kind == nnkDo:
+        var procDef = newNimNode(nnkProcDef)
+        theProc = genSym(nskProc, wren)
+        nim[^1].copyChildrenTo(procDef)
+        procDef[0] = theProc
+        stmts.add(procDef)
       stmts.add(getAddProcAuxCall(vm, module, class, wrenClass, theProc, wren,
                                   isStatic, isGetter))
   stmts.add(newCall("add", ident"modSrc", newLit(classDecl)))
