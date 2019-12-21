@@ -924,7 +924,6 @@ macro addProcAux(vm: Wren, module: string, className: string,
       default = defs[^1].orEmpty
     for _ in 0..<defs.len - 2:
       result.add([ty, default])
-  echo result.repr
 
 proc genDestroyGlue(vm, class: NimNode): NimNode =
   ## Generates glue code for the destructor.
