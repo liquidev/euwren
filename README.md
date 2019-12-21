@@ -233,6 +233,21 @@ explicitly, like here:
 proc notSoAnnoyingProc(a: int = myNumber) = discard
 ```
 
+New procedures may be created directly within a class binding. This is referred
+to as an *inline* declaration:
+```nim
+wren.foreign("inline"):
+  [Inline]:
+    sayHi do ():
+      # note that ``do ():`` **must** be used in this case, since ``do:`` is
+      # just syntax sugar over a regular ``:`` block. regular blocks are
+      # reserved for parameter type-based overloads, which may be implemented
+      # in the future.
+      echo "Hi!"
+    # getters can also be declared this way, and accept no parameters
+    ?pi do -> float: 3.14159265
+```
+
 Any exceptions raised from Nim procedures will abort the fiber instead of
 crashing the program:
 ```nim
