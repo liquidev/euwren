@@ -496,6 +496,9 @@ proc getParamNames(formalParams: NimNode): seq[string] =
 proc flattenTypeDesc(typeSym: NimNode): NimNode =
   result = typeSym
   while result.typeKind == ntyTypeDesc:
+    if result.getTypeInst.kind != nnkBracketExpr:
+      # workaround for ``typedesc``
+      break
     result = result.getTypeInst[1]
 
 proc eqType(a, b: NimNode): bool =
