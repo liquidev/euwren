@@ -1067,7 +1067,7 @@ proc getAddProcAuxCall(vm, module, class: NimNode, wrenClass: string,
                        theProc: NimNode, wrenName: string,
                        isStatic, isGetter = false): NimNode =
   # non-overloaded proc binding
-  if theProc.kind in {nnkIdent, nnkAccQuoted}:
+  if theProc.kind in {nnkIdent, nnkAccQuoted, nnkSym}:
     # defer the binding to addProcAux
     result = newCall(bindSym"addProcAux", vm, module, newLit(wrenClass),
                      newCall("typeof", theProc), newLit(wrenName),
@@ -1167,7 +1167,7 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
           isStatic = true
           isGetter = true
         theProc = nim[1]
-      elif nim.kind in {nnkPrefix, nnkDo} and nim[^1].kind == nnkDo:
+      if nim.kind in {nnkPrefix, nnkCall} and nim[^1].kind == nnkDo:
         var procDef = newNimNode(nnkProcDef)
         theProc = genSym(nskProc, wren)
         nim[^1].copyChildrenTo(procDef)

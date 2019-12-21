@@ -368,6 +368,19 @@ suite "foreign()":
           [5, 4, 3]
         ])
       """)
+    test "inline procs":
+      wren.foreign("test"):
+        [Inline]:
+          normal do (x: int) -> float:
+            result = float(x) * 1.5
+          ?getter do -> float: 3.14159
+      wren.ready()
+      wren.run("""
+        import "test" for Inline
+        System.print(Inline.normal(2))
+        System.print(Inline.getter)
+      """)
+      check vmOut == "3\n3.14159\n"
 
   #--
   # objects
