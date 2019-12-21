@@ -484,7 +484,7 @@ proc getParamList(formalParams: NimNode): seq[NimNode] =
       else:
         if identDefs[^1].kind != nnkIdent: identDefs[^1].getType
         else: newEmptyNode()
-    for i in 0..identDefs.len - 3:
+    for i in 0..<identDefs.len - 2:
       result.add(ty)
 
 proc getParamNames(formalParams: NimNode): seq[string] =
@@ -502,7 +502,7 @@ proc eqType(a, b: NimNode): bool =
   ## Compares two ``NimNodes`` to determine if they represent the same type.
   ## Better than ``sameType``, because it deals with ``typedesc``s properly.
   result = sameType(a.flattenTypeDesc, b.flattenTypeDesc) or
-           a.kind == nnkNilLit or b.kind == nnkNilLit
+           a.kind == nnkEmpty or b.kind == nnkNilLit
 
 proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
   ## Finds an appropriate proc overload based on the provided parameters.
@@ -568,12 +568,19 @@ proc newCast(T, val: NimNode): NimNode =
   ## Create a new nnkCast node, which casts ``val`` to ``T``.
   newTree(nnkCast, T, val)
 
-proc getSlotGetters(params: seq[NimNode], isStatic: bool): seq[NimNode] =
+type
+  Empty = object ## A dummy object to represent an nnkEmpty.
+
+proc getSlotGetters(params: openArray[array[2, NimNode]],
+                    isStatic: bool): seq[NimNode] =
   ## Get a list of getSlot() calls which extract the given parameters from
   ## the VM.
-  for i, paramType in params:
+  for i, pair in params:
     let
       slot = newLit(i + ord(isStatic))
+      paramType =
+        if pair[0] != bindSym"Empty": pair[0]
+        else: pair[1].getTypeInst
       getter =
         if paramType.typeKind in {ntyObject, ntyVar} or paramType.isRef:
           if paramType.typeKind == ntyVar:
@@ -774,8 +781,14 @@ proc genForeignErrorCheck(expr: NimNode): NimNode =
   branch.add(branchStmts)
   result.add(branch)
 
+proc orEmpty(node: NimNode): NimNode =
+  result =
+    if node.kind == nnkEmpty: bindSym"Empty"
+    else: node
+
 proc genProcGlue(theProc: NimNode, wrenName: string,
-                 isStatic, isGetter: bool): NimNode =
+                 isStatic, isGetter: bool,
+                 params: openArray[array[2, NimNode]]): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
 
   # get some metadata about the proc
@@ -790,7 +803,7 @@ proc genProcGlue(theProc: NimNode, wrenName: string,
   var body = newStmtList()
   # generate the call
   let
-    call = newCall(theProc, getSlotGetters(procParams, isStatic))
+    call = newCall(theProc, getSlotGetters(params, isStatic))
     callWithReturn =
       # no return type
       if procRetType.kind == nnkEmpty or eqIdent(procRetType, "void"): call
@@ -843,6 +856,34 @@ proc genSignature(theProc: NimNode, wrenName: string,
   else:
     result = name
 
+macro genProcAux(vm: Wren, module: string, className: string,
+                 theProc: typed, wrenName: static string,
+                 isStatic, isGetter: static bool,
+                 params: varargs[typed]): untyped =
+  ## Second step of binding a proc, generates code which binds it to the
+  ## provided Wren instance.
+
+  # unpack ``params`` into the correct type
+  var paramList: seq[array[2, NimNode]]
+  for i in countup(0, params.len - 1, 2):
+    paramList.add([params[i], params[i + 1]])
+  # call ``addProc``
+  let
+    classLit = className
+    nameLit = newLit(genSignature(theProc, wrenName, isStatic, isGetter))
+  result = newStmtList()
+  result.add(newCall("addProc", vm, module,
+                     classLit, nameLit, newLit(isStatic),
+                     genProcGlue(theProc, wrenName, isStatic, isGetter,
+                                 paramList)))
+  var wrenDecl = "foreign "
+  if isStatic:
+    wrenDecl.add("static ")
+  wrenDecl.add(genSignature(theProc, wrenName, isStatic, isGetter,
+                            namedParams = true))
+  wrenDecl.add('\n')
+  result.add(newCall("add", ident"classMethods", newLit(wrenDecl)))
+
 proc resolveOverload(procSym: NimNode, overloaded: bool,
                      params: varargs[NimNode]): NimNode =
   ## Resolve the overload of ``procSym``. If ``overloaded`` is true, overload
@@ -857,11 +898,12 @@ proc resolveOverload(procSym: NimNode, overloaded: bool,
     result = getOverload(procSym, params)
 
 macro addProcAux(vm: Wren, module: string, className: string,
-                 procSym: typed, wrenName: static string,
-                 overloaded, isStatic, isGetter: static bool,
+                 procSym: typed, wrenName: string,
+                 overloaded: static bool, isStatic, isGetter: bool,
                  params: varargs[typed]): untyped =
-  ## Generates code which binds a procedure to the provided Wren instance.
-  ## This is an implementation detail and you should not use it in your code.
+  ## First step of binding a proc, resolves the overload using the given params
+  ## and defers the binding to ``genProcAux``. This is a workaround for
+  ## Nim/#12942, to make the bound procedure's parameters ``typed``.
 
   # as a workaround for Nim/#12831, unwrap the procSym if it's
   # in an nnkTypeOfExpr
@@ -869,22 +911,20 @@ macro addProcAux(vm: Wren, module: string, className: string,
   if procSym.kind == nnkTypeOfExpr:
     procSym = procSym[0]
   # find the correct overload of the procedure, if applicable
-  var theProc = resolveOverload(procSym, overloaded, params)
-  # generate glue and register the procedure in the Wren instance
   let
-    classLit = className
-    nameLit = newLit(genSignature(theProc, wrenName, isStatic, isGetter))
-  result = newStmtList()
-  result.add(newCall("addProc", vm, module,
-                     classLit, nameLit, newLit(isStatic),
-                     genProcGlue(theProc, wrenName, isStatic, isGetter)))
-  var wrenDecl = "foreign "
-  if isStatic:
-    wrenDecl.add("static ")
-  wrenDecl.add(genSignature(theProc, wrenName, isStatic, isGetter,
-                            namedParams = true))
-  wrenDecl.add('\n')
-  result.add(newCall("add", ident"classMethods", newLit(wrenDecl)))
+    theProc = resolveOverload(procSym, overloaded, params)
+    procImpl = theProc.getImpl
+  # defer to genProcAux
+  result = newCall(bindSym"genProcAux", vm, module, className, theProc,
+                   wrenName, isStatic, isGetter)
+  # retrieve [type, defaultValue] pairs from the proc's params
+  for defs in procImpl[3][1..^1]:
+    let
+      ty = defs[^2].orEmpty
+      default = defs[^1].orEmpty
+    for _ in 0..<defs.len - 2:
+      result.add([ty, default])
+  echo result.repr
 
 proc genDestroyGlue(vm, class: NimNode): NimNode =
   ## Generates glue code for the destructor.

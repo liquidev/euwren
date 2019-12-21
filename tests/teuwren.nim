@@ -211,14 +211,18 @@ suite "foreign()":
     if not success: echo vmOut
     check success
   test "default param handling":
-    proc defaultParams(x = 2): int = x + 1
+    var a = 2
+    proc literalParams(x = 2): int = x + 1
+    proc identParams(x = a): int = x + 2
     wren.foreign("test"):
       [Test]:
-        defaultParams
+        literalParams
+        identParams
     wren.ready()
     wren.run("""
       import "test" for Test
-      System.print(Test.defaultParams(2))
+      System.print(Test.literalParams(2))
+      System.print(Test.identParams(3))
     """)
   test "array params":
     test "array params - basic":
