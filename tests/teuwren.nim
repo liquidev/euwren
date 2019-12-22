@@ -493,6 +493,22 @@ suite "foreign()":
       var r = Rect.new(1, 2, 3, 4)
       Test.checkRect(r)
     """)
+  test "{.noFields.}":
+    type
+      Thing = object
+        field*: float
+    proc newThing(): Thing = Thing(field: 1)
+    wren.foreign("test"):
+      Thing:
+        {.noFields.}
+        *newThing -> new
+    wren.ready()
+    expect WrenError:
+      wren.run("""
+        import "test" for Thing
+        var x = Thing.new()
+        System.print(x.field)
+      """)
 
   #--
   # enums

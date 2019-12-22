@@ -1038,14 +1038,15 @@ proc genTupleConstrGlue(vm, class, module: NimNode,
                      newLit(false), newLit(true), newLit(false)))
 
 macro addClassAux(vm: Wren, module: string, class: typed,
-                  wrenClass: string): untyped =
+                  wrenClass: string, fields: bool): untyped =
   ## Generates code which binds a new class to the provided Wren instance.
   ## This is an implementation detail and you should not use it in your code.
 
   # generate all the glue procs
   let destroyGlue = genDestroyGlue(vm, class)
   result = newStmtList()
-  result.add(genFieldGlue(vm, class, module, wrenClass.strVal))
+  if fields.boolVal:
+    result.add(genFieldGlue(vm, class, module, wrenClass.strVal))
   if class.flattenTypeDesc.typeKind == ntyTuple:
     result.add(genTupleConstrGlue(vm, class, module, wrenClass.strVal))
   result.add(newCall("addClass", vm, module, wrenClass, destroyGlue))
@@ -1145,10 +1146,13 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
   if not isNamespace:
     classDecl = "foreign " & classDecl
     stmts.add(newCall(bindSym"saveWrenName", class, module, newLit(wrenClass)))
-    stmts.add(newCall(bindSym"addClassAux", vm, module, class,
-                      newLit(wrenClass)))
+  var bindFields = true
   for p in procs:
     if p.kind == nnkDiscardStmt: discard
+    elif p.kind == nnkPragma:
+      p[0].expectKind(nnkIdent)
+      case p[0].strVal
+      of "noFields": bindFields = false
     else:
       let (nim, wren) = getAlias(p)
       var
@@ -1175,6 +1179,9 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
         stmts.add(procDef)
       stmts.add(getAddProcAuxCall(vm, module, class, wrenClass, theProc, wren,
                                   isStatic, isGetter))
+  if not isNamespace:
+    stmts.add(newCall(bindSym"addClassAux", vm, module, class,
+                      newLit(wrenClass), newLit(bindFields)))
   stmts.add(newCall("add", ident"modSrc", newLit(classDecl)))
   stmts.add(newCall("add", ident"modSrc", ident"classMethods"))
   stmts.add(newCall("add", ident"modSrc", newLit("}\n")))
