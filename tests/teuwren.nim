@@ -381,6 +381,24 @@ suite "foreign()":
         System.print(Inline.getter)
       """)
       check vmOut == "3\n3.14159\n"
+    test "injections":
+      wren.foreign("test"):
+        """
+        class Injected {
+          test() { System.print("top-level") }
+        }
+        """
+        [Test]:
+          """
+          test() { System.print("in class") }
+          """
+      wren.ready()
+      wren.run("""
+        import "test" for Injected, Test
+        Injected.test()
+        Test.test()
+      """)
+      check vmOut == "top-level\nin class\n"
 
   #--
   # objects

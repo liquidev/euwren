@@ -549,6 +549,8 @@ proc getWrenVar(id: uint16): ModuleVar {.compileTime.} =
 
 proc getTypeId(typeSym: NimNode): uint16 =
   ## Get a unique type ID for the given type symbol.
+  if typeSym.kind != nnkSym:
+    error("<" & typeSym.repr & "> is not a type", typeSym)
   let hash = typeSym.signatureHash
   if hash notin typeIds:
     let
