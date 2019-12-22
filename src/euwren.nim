@@ -1094,7 +1094,6 @@ proc isWrenIdent(str: string): bool =
 
 proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
   ## Extract the Nim name and Wren name from the given declaration.
-  echo decl.treerepr
   if decl.kind == nnkInfix and decl[0].strVal == "->":
     decl[2].expectKind({nnkIdent, nnkStrLit, nnkAccQuoted})
     var alias = decl[2]
