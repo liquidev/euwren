@@ -1094,6 +1094,7 @@ proc isWrenIdent(str: string): bool =
 
 proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
   ## Extract the Nim name and Wren name from the given declaration.
+  echo decl.treerepr
   if decl.kind == nnkInfix and decl[0].strVal == "->":
     decl[2].expectKind({nnkIdent, nnkStrLit, nnkAccQuoted})
     var alias = decl[2]
@@ -1106,13 +1107,13 @@ proc getAlias(decl: NimNode): tuple[nim: NimNode, wren: string] =
   elif decl.kind == nnkPrefix:
     if decl[1].kind == nnkCall:
       result = (nim: decl, wren: decl[1][0].repr)
-    elif decl[1].kind == nnkIdent:
+    elif decl[1].kind in {nnkIdent, nnkAccQuoted}:
       result = (nim: decl, wren: decl[1].repr)
     else:
       error("invalid binding", decl)
   elif decl.kind == nnkCall:
     result = (nim: decl, wren: decl[0].repr)
-  elif decl.kind == nnkIdent:
+  elif decl.kind in {nnkIdent, nnkAccQuoted}:
     result = (nim: decl, wren: decl.repr)
   else:
     error("invalid binding", decl)
