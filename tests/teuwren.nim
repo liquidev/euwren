@@ -385,12 +385,12 @@ suite "foreign()":
       wren.foreign("test"):
         """
         class Injected {
-          test() { System.print("top-level") }
+          static test() { System.print("top-level") }
         }
         """
         [Test]:
           """
-          test() { System.print("in class") }
+          static test() { System.print("in class") }
           """
       wren.ready()
       wren.run("""

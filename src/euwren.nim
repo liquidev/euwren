@@ -1155,6 +1155,8 @@ proc genClassBinding(vm, module, decl: NimNode): NimNode =
       p[0].expectKind(nnkIdent)
       case p[0].strVal
       of "noFields": bindFields = false
+    elif p.kind in {nnkStrLit..nnkTripleStrLit}:
+      stmts.add(newCall("add", ident"classMethods", p))
     else:
       let (nim, wren) = getAlias(p)
       var
