@@ -438,19 +438,19 @@ proc `{}`*(vm: Wren, signature: string): WrenRef =
   ## Creates a 'call handle' to the method denoted by ``methodSignature``.
   result = vm.newRef(wrenMakeCallHandle(vm.handle, signature))
 
-converter toWrenValue*(val: bool): WrenValue =
+proc toWrenValue*(val: bool): WrenValue =
   WrenValue(kind: wvkBool, boolVal: val)
-converter toWrenValue*(val: int): WrenValue =
+proc toWrenValue*(val: int): WrenValue =
   WrenValue(kind: wvkNumber, numVal: val.float)
-converter toWrenValue*(val: float): WrenValue =
+proc toWrenValue*(val: float): WrenValue =
   WrenValue(kind: wvkNumber, numVal: val)
-converter toWrenValue*(val: string): WrenValue =
+proc toWrenValue*(val: string): WrenValue =
   WrenValue(kind: wvkString, strVal: val)
-converter toWrenValue*(val: WrenRef): WrenValue =
+proc toWrenValue*(val: WrenRef): WrenValue =
   WrenValue(kind: wvkWrenRef, wrenRef: val)
 
-proc call*[T](vm: Wren, theMethod: WrenRef,
-              receiver: WrenRef, args: varargs[WrenValue]): T =
+proc call*[T](theMethod: WrenRef,
+              receiver: WrenRef, args: varargs[WrenValue, toWrenValue]): T =
   ## Calls the given method with the given arguments. The first argument must
   ## always be present, and is the receiver of the method. The rest of the
   ## arguments is optional. The generic parameter decides on the return type of
@@ -459,6 +459,7 @@ proc call*[T](vm: Wren, theMethod: WrenRef,
   ## **Design note:** The ``receiver`` param only accepts ``WrenRef``, because
   ## it's pretty much never useful to call a method on a primitive type, since
   ## the native implementation is always faster.
+  let vm = theMethod.vm
   wrenEnsureSlots(vm.handle, cint(1 + args.len))
   vm.handle.setSlot[:WrenRef](0, receiver)
   for i, arg in args:

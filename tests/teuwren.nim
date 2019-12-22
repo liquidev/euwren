@@ -46,7 +46,7 @@ suite "base API":
     let
       testClass = wren["main", "Test"]
       methodRun1 = wren{"run(_)"}
-      callResult = wren.call[:string](methodRun1, testClass, 42)
+      callResult = methodRun1.call[:string](testClass, 42)
     check vmOut == "result = 42\n"
     check callResult == "Success"
   test "WrenError on fiber abort":
