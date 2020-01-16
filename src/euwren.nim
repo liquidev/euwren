@@ -315,7 +315,7 @@ proc getVariable*(vm: RawVM, slot: int, module, variable: string) =
 var wrenNames {.compileTime.}: Table[uint16, ModuleVar] ## \
   ## Maps unique type IDs to their corresponding variables in bound modules.
 
-proc getTypeId(typeSym: NimNode): uint16
+proc getTypeId(typeSym: NimNode): uint16 {.compileTime.}
 macro wrenVar(T: typed): untyped =
   let id = getTypeId(T)
   if id notin wrenNames:
@@ -494,18 +494,22 @@ proc getParamNames(formalParams: NimNode): seq[string] =
     for name in identDefs[0..^3]:
       result.add(name.strVal)
 
-proc flattenTypeDesc(typeSym: NimNode): NimNode =
+proc flattenType(typeSym: NimNode, typeKinds = {ntyTypeDesc}): NimNode =
   result = typeSym
-  while result.typeKind == ntyTypeDesc:
-    if result.getTypeInst.kind != nnkBracketExpr:
-      # workaround for ``typedesc``
-      break
-    result = result.getTypeInst[1]
+  while result.typeKind in typeKinds:
+    let kind = result.typeKind
+    while result.typeKind == kind:
+      if result.typeKind == ntyTypeDesc and ntyTypeDesc in typeKinds:
+        if result.getTypeInst.kind != nnkBracketExpr: break
+        result = result.getTypeInst[1]
+      if result.typeKind == ntyRef and ntyRef in typeKinds:
+        if result.typeKind != ntyRef: break
+        result = result.getTypeImpl[0]
 
 proc eqType(a, b: NimNode): bool =
   ## Compares two ``NimNodes`` to determine if they represent the same type.
   ## Better than ``sameType``, because it deals with ``typedesc``s properly.
-  result = sameType(a.flattenTypeDesc, b.flattenTypeDesc) or
+  result = sameType(a.flattenType, b.flattenType) or
            a.kind == nnkEmpty or b.kind == nnkNilLit
 
 proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
@@ -527,6 +531,7 @@ proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
 proc getParent(typeSym: NimNode): NimNode =
   ## Get the parent type for the given type symbol, or ``nil`` if the type has
   ## no parent type.
+  if typeSym.kind != nnkSym: return nil # generic types don't have parents
   var impl = typeSym.getImpl[2]
   if impl.kind == nnkTupleTy: return nil # tuples don't have parents
   impl.expectKind({nnkRefTy, nnkObjectTy, nnkTupleTy})
@@ -548,11 +553,48 @@ var
 proc getWrenVar(id: uint16): ModuleVar {.compileTime.} =
   result = wrenNames[id]
 
+proc isForeignType(typeSym: NimNode): bool =
+  ## Check if the given type symbol denotes a foreign type (object, ref, tuple).
+  var theType = typeSym
+  # flatten generic type
+  if theType.kind == nnkBracketExpr:
+    theType = theType[0]
+  # XXX: this assumes that generic typedescs are proper foreign types
+  result = theType.flattenType.typeKind in {ntyObject, ntyRef, ntyTuple,
+                                                ntyGenericBody}
+
+proc typeHash(typeSym: NimNode): string =
+  ## Generate a type hash for a symbol. This is designed to work with generic
+  ## instantiations.
+  var typeSym = typeSym.flattenType
+  if typeSym.kind != nnkBracketExpr:
+    # change any internal number alias types into their actual implementation;
+    # this prevents problems with types like float spontaneously becoming
+    # float64 in generic parameters
+    case typeSym.typeKind
+    of ntyInt:
+      # only support 32- and 64-bit
+      # it's unlikely that Wren works on architectures other than 32/64-bit
+      # anyways since it uses float64s for NaN tagging
+      if sizeof(pointer) == 4: typeSym = bindSym"int32"
+      elif sizeof(pointer) == 8: typeSym = bindSym"int64"
+    of ntyFloat:
+      # float is always float64
+      typeSym = bindSym"float64"
+    else: discard
+    result = typeSym.signatureHash
+  else:
+    result = typeSym[0].signatureHash & "["
+    for gparam in typeSym[1..^1]:
+      result.add(gparam.typeHash & ",")
+    result.add("]")
+
 proc getTypeId(typeSym: NimNode): uint16 =
   ## Get a unique type ID for the given type symbol.
-  if typeSym.kind != nnkSym:
-    error("<" & typeSym.repr & "> is not a type", typeSym)
-  let hash = typeSym.signatureHash
+  if not typeSym.isForeignType:
+    error("<" & typeSym.repr & "> (of kind " & $typeSym.typeKind &
+          ") is not a supported foreign type", typeSym)
+  let hash = typeSym.typeHash
   if hash notin typeIds:
     let
       id = typeIds.len.uint16
@@ -568,7 +610,7 @@ proc getTypeId(typeSym: NimNode): uint16 =
 
 proc isRef(class: NimNode): bool =
   ## Checks if the given type symbol represents a ref type.
-  result = class.flattenTypeDesc.typeKind == ntyRef
+  result = class.flattenType.typeKind == ntyRef
 
 proc newCast(T, val: NimNode): NimNode =
   ## Create a new nnkCast node, which casts ``val`` to ``T``.
@@ -576,17 +618,20 @@ proc newCast(T, val: NimNode): NimNode =
 
 type
   Empty = object ## A dummy object to represent an nnkEmpty.
+  TypePair = array[2, NimNode]
 
-proc getSlotGetters(params: openArray[array[2, NimNode]],
+proc getType(pair: TypePair): NimNode =
+  if pair[0] != bindSym"Empty": result = pair[0]
+  else: result = pair[1].getTypeInst
+
+proc getSlotGetters(params: openarray[TypePair],
                     isStatic: bool): seq[NimNode] =
   ## Get a list of getSlot() calls which extract the given parameters from
   ## the VM.
   for i, pair in params:
     let
       slot = newLit(i + ord(isStatic))
-      paramType =
-        if pair[0] != bindSym"Empty": pair[0]
-        else: pair[1].getTypeInst
+      paramType = pair.getType
       getter =
         if paramType.typeKind in {ntyObject, ntyVar} or paramType.isRef:
           if paramType.typeKind == ntyVar:
@@ -610,7 +655,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
     Nums = {ntyInt..ntyUint64, ntyEnum}
     Lists = {ntyArray, ntySequence}
     Foreign = {ntyObject, ntyRef, ntyTuple}
-  let ty = ty.flattenTypeDesc
+  let ty = ty.flattenType
   # generate the check
   let
     wrenType =
@@ -619,10 +664,12 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
       elif ty.typeKind == ntyString: wtString
       elif ty == bindSym"WrenRef": wtUnknown
       elif ty.kind == nnkBracketExpr:
-        let subTy = ty[0].flattenTypeDesc
+        let subTy = ty[0].flattenType
         if subTy.typeKind in Lists: wtList
+        elif subTy.typeKind in Foreign: wtForeign
         else:
-          error("generic types besides array and seq are not supported", ty)
+          error("unsupported generic type kind: " & $ty.typeKind &
+                "for <" & ty.repr & ">", ty)
           wtUnknown
       elif ty.typeKind in Foreign: wtForeign
       else:
@@ -644,7 +691,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
                      newPar(newTree(nnkInfix, ident"or", idCheck, parentCheck)))
 
 proc genTypeChecks(vm: NimNode, isStatic: bool,
-                   types: varargs[NimNode]): NimNode =
+                   typePairs: varargs[TypePair]): NimNode =
   ## Generate a type check condition. This looks at all the params and assembles
   ## a big chain of conditions which check the type.
   ## This is a much better way of checking types compared to the 0.1.0
@@ -653,10 +700,13 @@ proc genTypeChecks(vm: NimNode, isStatic: bool,
   ## runtime overhead, because it's just a simple chain of conditions.
 
   # there isn't any work to be done if the proc doesn't accept params
-  if types.len == 0 or types.len == ord(not isStatic): return newLit(true)
+  if typePairs.len == 0 or typePairs.len == ord(not isStatic):
+    return newLit(true)
 
   # if the first param is var, ignore that
-  var types: seq[NimNode] = @types
+  var types: seq[NimNode]
+  for pair in typePairs:
+    types.add(pair.getType)
   if types[0].kind == nnkVarTy:
     types[0] = types[0][0]
 
@@ -664,7 +714,7 @@ proc genTypeChecks(vm: NimNode, isStatic: bool,
   var checks: seq[NimNode]
   for i, ty in types[ord(not isStatic)..^1]:
     let slot = i + 1
-    checks.add(genTypeCheck(vm, ty, newLit(slot)))
+    checks.add(genTypeCheck(vm, ty.getType, newLit(slot)))
   # fold the list of checks to an nnkInfix node
   result = checks[^1]
   for i in countdown(checks.len - 2, 0):
@@ -674,7 +724,7 @@ proc getWrenName(typeSym: NimNode): string =
   ## Get the Wren name for the corresponding type. This aliases number types
   ## to ``number``, ``WrenRef`` to ``object``, and any Wren-bound types to
   ## their names in the Wren VM.
-  let typeSym = typeSym.flattenTypeDesc
+  let typeSym = typeSym.flattenType
   if typeSym.typeKind in {ntyInt..ntyUint64}: result = "number"
   elif typeSym == bindSym"WrenRef": result = "object"
   elif typeSym.typeKind in {ntyObject, ntyRef} and
@@ -792,16 +842,38 @@ proc orEmpty(node: NimNode): NimNode =
     if node.kind == nnkEmpty: bindSym"Empty"
     else: node
 
+proc getGenericParams(theProc: NimNode,
+                      params: openArray[TypePair]): Table[string, NimNode] =
+  let
+    procImpl = theProc.getImpl
+    procParams = getParamList(procImpl[3])
+  for i, param in procParams:
+    if param.repr notin result:
+      let userParam = params[i].getType
+      result[param.repr] = userParam
+
+proc resolveGenericParams(expr: NimNode,
+                          table: Table[string, NimNode]): NimNode =
+  if expr.flattenType.typeKind == ntyGenericParam:
+    result = table[expr.repr]
+  elif expr.typeKind == ntyGenericInvocation:
+    result = expr
+    for i, sub in result[1..^1]:
+      result[i + 1] = resolveGenericParams(sub, table)
+  else:
+    result = expr
+
 proc genProcGlue(theProc: NimNode, wrenName: string,
                  isStatic, isGetter: bool,
-                 params: openArray[array[2, NimNode]]): NimNode =
+                 params: openArray[TypePair]): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
 
   # get some metadata about the proc
   let
     procImpl = theProc.getImpl
     procParams = getParamList(procImpl[3])
-    procRetType = procImpl[3][0]
+    genericParamTable = getGenericParams(theProc, params)
+    procRetType = resolveGenericParams(procImpl[3][0], genericParamTable)
   # create a new anonymous proc; this is our resulting glue proc
   result = newProc(params = [newEmptyNode(),
                              newIdentDefs(ident"vm", ident"RawVM")])
@@ -818,10 +890,10 @@ proc genProcGlue(theProc: NimNode, wrenName: string,
                     ident"vm", newLit(0), call)
     callWithTry = genForeignErrorCheck(callWithReturn)
   # generate type check
-  let typeCheck = genTypeChecks(ident"vm", isStatic, procParams)
+  let typeCheck = genTypeChecks(ident"vm", isStatic, params)
   body.add(newIfStmt((cond: typeCheck, body: callWithTry))
            .add(newTree(nnkElse, genTypeError(theProc, wrenName,
-                                              procParams.len, theProc))))
+                                              params.len, theProc))))
   result.body = body
 
 proc genSignature(theProc: NimNode, wrenName: string,
@@ -924,12 +996,20 @@ macro addProcAux(vm: Wren, module: string, className: string,
   result = newCall(bindSym"genProcAux", vm, module, className, theProc,
                    wrenName, isStatic, isGetter)
   # retrieve [type, defaultValue] pairs from the proc's params
+  var index = 0
   for defs in procImpl[3][1..^1]:
-    let
-      ty = defs[^2].orEmpty
-      default = defs[^1].orEmpty
+    var ty = defs[^2].orEmpty
+    # resolve generic types
+    if ty.typeKind == ntyGenericParam:
+      if index < params.len:
+        ty = params[index]
+      else:
+        error("unresolved generic param; provide all parameters' types",
+              procSym)
+    let default = defs[^1].orEmpty
     for _ in 0..<defs.len - 2:
       result.add([ty, default])
+      inc(index)
 
 proc genDestroyGlue(vm, class: NimNode): NimNode =
   ## Generates glue code for the destructor.
@@ -982,19 +1062,20 @@ proc genGetSet(vm, class, module, identDefs: NimNode,
   ## Generates the necessary glue getters, glue setters, and ``addProcAux``
   ## calls for the given ``identDefs`` to wrap the fields of an object.
   result = newStmtList()
+  echo identDefs.treeRepr
   for def in identDefs[0..^3]:
-    if def.kind == nnkPostfix and def[0].strVal == "*":
+    if def.isExported:
       let
         getSym = genSym(nskProc, "objGet")
         setSym = genSym(nskProc, "objSet")
-        getProc = genFieldGetter(getSym, class, def[1], identDefs[^2])
-        setProc = genFieldSetter(setSym, class, def[1], identDefs[^2])
+        getProc = genFieldGetter(getSym, class, def, identDefs[^2])
+        setProc = genFieldSetter(setSym, class, def, identDefs[^2])
       result.add([getProc, setProc])
       result.add(newCall(bindSym"addProcAux", vm, module,
-                         newLit(wrenClass), getSym, newLit(def[1].strVal),
+                         newLit(wrenClass), getSym, newLit(def.strVal),
                          newLit(false), newLit(false), newLit(true)))
       result.add(newCall(bindSym"addProcAux", vm, module,
-                         newLit(wrenClass), setSym, newLit(def[1].strVal & '='),
+                         newLit(wrenClass), setSym, newLit(def.strVal & '='),
                          newLit(false), newLit(false), newLit(false)))
 
 proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
@@ -1002,15 +1083,24 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
   ## generating glue procedures that get or set the fields and using
   ## ``addProcAux`` to bind them.
   result = newStmtList()
-  var ty = class.getImpl[2]
-  while ty.kind == nnkRefTy:
-    ty = ty[0]
-  if ty.kind != nnkObjectTy: return
+  var ty = class.getTypeImpl
+    .flattenType({ntyTypeDesc, ntyRef})
+    .getTypeImpl # fuck typeDesc
+  echo ty.kind
+  if ty.kind notin {nnkObjectTy, nnkTupleTy}: return
+  echo "got through"
   let parent = getParent(class)
   if parent != nil:
     result.add(genFieldGlue(vm, parent, module, wrenClass))
-  for rec in ty[2]:
+  let fieldDefs =
+    case ty.kind
+    of nnkObjectTy: ty[2]
+    of nnkTupleTy: ty
+    else: nil
+  echo "field defs: ", fieldDefs.repr
+  for rec in fieldDefs:
     # fields
+    echo rec.kind
     if rec.kind == nnkIdentDefs:
       result.add(genGetSet(vm, class, module, rec, wrenClass))
     elif rec.kind == nnkRecCase:
@@ -1019,6 +1109,7 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
           result.add(genGetSet(vm, class, module, branch, wrenClass))
         elif branch.kind == nnkOfBranch:
           result.add(genGetSet(vm, class, module, branch[1], wrenClass))
+  echo result.repr
 
 proc genTupleConstrGlue(vm, class, module: NimNode,
                         wrenClass: string): NimNode =
@@ -1050,7 +1141,7 @@ macro addClassAux(vm: Wren, module: string, class: typed,
   result = newStmtList()
   if fields.boolVal:
     result.add(genFieldGlue(vm, class, module, wrenClass.strVal))
-  if class.flattenTypeDesc.typeKind == ntyTuple:
+  if class.flattenType.typeKind == ntyTuple:
     result.add(genTupleConstrGlue(vm, class, module, wrenClass.strVal))
   result.add(newCall("addClass", vm, module, wrenClass, destroyGlue))
 
