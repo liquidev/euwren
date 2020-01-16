@@ -531,7 +531,7 @@ suite "foreign()":
   test "concrete generic":
     type
       Vec2[T] = object
-        x, y: T
+        x*, y*: T
     proc vec2[T](x, y: T): Vec2[T] =
       result = Vec2[T](x: x, y: y)
     proc `+`[T](a, b: Vec2[T]): Vec2[T] =
@@ -539,7 +539,7 @@ suite "foreign()":
     wren.foreign("test"):
       Vec2[float] -> Vec2f:
        *vec2(float, float) -> new
-       # `+`(Vec2[float], Vec2[float])
+       `+`(Vec2[float], Vec2[float])
     wren.ready()
     wren.run("""
       import "test" for Vec2f

@@ -506,11 +506,20 @@ proc flattenType(typeSym: NimNode, typeKinds = {ntyTypeDesc}): NimNode =
         if result.typeKind != ntyRef: break
         result = result.getTypeImpl[0]
 
+proc removeGeneric(typeExpr: NimNode): NimNode =
+  result = typeExpr
+  if result.kind == nnkBracketExpr:
+    result = result[0]
+
 proc eqType(a, b: NimNode): bool =
   ## Compares two ``NimNodes`` to determine if they represent the same type.
   ## Better than ``sameType``, because it deals with ``typedesc``s properly.
-  result = sameType(a.flattenType, b.flattenType) or
-           a.kind == nnkEmpty or b.kind == nnkNilLit
+  ## This ignores generic instantiations.
+  if a.kind == nnkEmpty or b.kind == nnkNilLit: return true
+  let
+    a = a.removeGeneric.flattenType
+    b = b.removeGeneric.flattenType
+  result = sameType(a, b)
 
 proc getOverload(choices: NimNode, params: varargs[NimNode]): NimNode =
   ## Finds an appropriate proc overload based on the provided parameters.
@@ -654,7 +663,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
   const
     Nums = {ntyInt..ntyUint64, ntyEnum}
     Lists = {ntyArray, ntySequence}
-    Foreign = {ntyObject, ntyRef, ntyTuple}
+    Foreign = {ntyObject, ntyRef, ntyTuple, ntyGenericBody}
   let ty = ty.flattenType
   # generate the check
   let
@@ -668,7 +677,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
         if subTy.typeKind in Lists: wtList
         elif subTy.typeKind in Foreign: wtForeign
         else:
-          error("unsupported generic type kind: " & $ty.typeKind &
+          error("unsupported generic type kind: " & $ty.typeKind & ' ' &
                 "for <" & ty.repr & ">", ty)
           wtUnknown
       elif ty.typeKind in Foreign: wtForeign
@@ -752,7 +761,7 @@ proc genTypeError(theProc: NimNode, wrenName: string, arity: int,
     let
       impl = overload.getImpl
       params = impl[3]
-    expectedStr.add("  " & wrenName & '(')
+    expectedStr.add("\n  " & wrenName & '(')
     for i, defs in params[1..^1]:
       for j, def in defs[0..^3]:
         expectedStr.add(def.repr)
@@ -761,9 +770,11 @@ proc genTypeError(theProc: NimNode, wrenName: string, arity: int,
       expectedStr.add(": " & getWrenName(defs[^2]))
       if i < params.len - 2:
         expectedStr.add(", ")
-    expectedStr.add("): " & getWrenName(params[0]))
+    expectedStr.add(')')
+    if params[0].kind != nnkEmpty:
+      expectedStr.add(": " & getWrenName(params[0]))
   result.add(newCall("add", ident"err",
-                     newLit(">\nbut expected one of:\n" & expectedStr)))
+                     newLit(">\nbut expected one of:" & expectedStr)))
   result.add(fiberAbort)
 
 proc genForeignObjectInit(vm, objType, expr, slot: NimNode,
@@ -842,6 +853,7 @@ proc orEmpty(node: NimNode): NimNode =
     if node.kind == nnkEmpty: bindSym"Empty"
     else: node
 
+proc `$`(n: NimNode): string = n.repr
 proc getGenericParams(theProc: NimNode,
                       params: openArray[TypePair]): Table[string, NimNode] =
   let
@@ -858,8 +870,11 @@ proc resolveGenericParams(expr: NimNode,
     result = table[expr.repr]
   elif expr.typeKind == ntyGenericInvocation:
     result = expr
-    for i, sub in result[1..^1]:
-      result[i + 1] = resolveGenericParams(sub, table)
+    if expr.repr in table:
+      result = table[expr.repr]
+    else:
+      for i, sub in result[1..^1]:
+        result[i + 1] = resolveGenericParams(sub, table)
   else:
     result = expr
 
@@ -1000,7 +1015,7 @@ macro addProcAux(vm: Wren, module: string, className: string,
   for defs in procImpl[3][1..^1]:
     var ty = defs[^2].orEmpty
     # resolve generic types
-    if ty.typeKind == ntyGenericParam:
+    if ty.typeKind in {ntyGenericParam, ntyGenericInvocation}:
       if index < params.len:
         ty = params[index]
       else:
@@ -1062,9 +1077,8 @@ proc genGetSet(vm, class, module, identDefs: NimNode,
   ## Generates the necessary glue getters, glue setters, and ``addProcAux``
   ## calls for the given ``identDefs`` to wrap the fields of an object.
   result = newStmtList()
-  echo identDefs.treeRepr
   for def in identDefs[0..^3]:
-    if def.isExported:
+    if def.isExported or class.flattenType.typeKind == ntyTuple:
       let
         getSym = genSym(nskProc, "objGet")
         setSym = genSym(nskProc, "objSet")
@@ -1086,9 +1100,7 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
   var ty = class.getTypeImpl
     .flattenType({ntyTypeDesc, ntyRef})
     .getTypeImpl # fuck typeDesc
-  echo ty.kind
   if ty.kind notin {nnkObjectTy, nnkTupleTy}: return
-  echo "got through"
   let parent = getParent(class)
   if parent != nil:
     result.add(genFieldGlue(vm, parent, module, wrenClass))
@@ -1097,10 +1109,8 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
     of nnkObjectTy: ty[2]
     of nnkTupleTy: ty
     else: nil
-  echo "field defs: ", fieldDefs.repr
   for rec in fieldDefs:
     # fields
-    echo rec.kind
     if rec.kind == nnkIdentDefs:
       result.add(genGetSet(vm, class, module, rec, wrenClass))
     elif rec.kind == nnkRecCase:
@@ -1109,7 +1119,6 @@ proc genFieldGlue(vm, class, module: NimNode, wrenClass: string): NimNode =
           result.add(genGetSet(vm, class, module, branch, wrenClass))
         elif branch.kind == nnkOfBranch:
           result.add(genGetSet(vm, class, module, branch[1], wrenClass))
-  echo result.repr
 
 proc genTupleConstrGlue(vm, class, module: NimNode,
                         wrenClass: string): NimNode =
