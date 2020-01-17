@@ -241,7 +241,6 @@ proc getSlotType*(vm: RawVM, slot: int): WrenType =
 
 proc getSlotForeignId*(vm: RawVM, slot: int): uint16 =
   result = cast[ptr uint16](wrenGetSlotForeign(vm, slot.cint))[]
-  echo result
 
 proc getSlotTypeString*(vm: RawVM, slot: int): string =
   let ty = vm.getSlotType(slot)
@@ -478,7 +477,7 @@ proc call*[T](theMethod: WrenRef,
 #--
 
 # leaving this here for my own debugging convenience.
-proc `$`(n: NimNode): string = n.repr
+proc `$`(n: NimNode): string {.used.} = n.repr
 
 proc getParamList(formalParams: NimNode): seq[NimNode] =
   ## Flattens an nnkFormalParams into a C-like list of argument types,
@@ -563,9 +562,6 @@ var
   parentTypeIds {.compileTime.}: Table[uint16, set[uint16]]
     ## Maps the unique IDs to their parents' IDs
 
-proc getWrenVar(id: uint16): ModuleVar {.compileTime.} =
-  result = wrenNames[id]
-
 proc isForeignType(typeSym: NimNode): bool =
   ## Check if the given type symbol denotes a foreign type (object, ref, tuple).
   var theType = typeSym
@@ -608,7 +604,6 @@ proc getTypeId(typeSym: NimNode): uint16 =
     error("<" & typeSym.repr & "> (of kind " & $typeSym.typeKind &
           ") is not a supported foreign type", typeSym)
   let hash = typeSym.typeHash
-  echo typeSym.repr, " -- ", hash
   if hash notin typeIds:
     let
       id = typeIds.len.uint16
@@ -669,9 +664,7 @@ proc genTypeCheck(vm, ty, slot: NimNode): NimNode =
     Nums = {ntyInt..ntyUint64, ntyEnum}
     Lists = {ntyArray, ntySequence}
     Foreign = {ntyObject, ntyRef, ntyTuple, ntyGenericBody}
-  echo "ty: ", ty
   let ty = ty.flattenType
-  echo "flat ty: ", ty
   # generate the check
   let
     wrenType =
@@ -720,11 +713,9 @@ proc genTypeChecks(vm: NimNode, isStatic: bool,
     return newLit(true)
 
   # place the actual types into a seq
-  echo typePairs
   var types: seq[NimNode]
   for pair in typePairs:
     types.add(pair.getType)
-  echo types
   # if the first param is var, ignore that
   if types[0].kind == nnkVarTy:
     types[0] = types[0][0]
@@ -892,15 +883,11 @@ proc genProcGlue(theProc: NimNode, wrenName: string,
                  params: openArray[TypePair]): NimNode =
   ## Generate a glue procedure with type checks and VM slot conversions.
 
-  echo "------ begin"
   # get some metadata about the proc
   let
     procImpl = theProc.getImpl
-    procParams = getParamList(procImpl[3])
     genericParamTable = getGenericParams(theProc, params)
     procRetType = resolveGenericParams(procImpl[3][0], genericParamTable)
-  echo procParams
-  echo params
   # create a new anonymous proc; this is our resulting glue proc
   result = newProc(params = [newEmptyNode(),
                              newIdentDefs(ident"vm", ident"RawVM")])
@@ -917,14 +904,11 @@ proc genProcGlue(theProc: NimNode, wrenName: string,
                     ident"vm", newLit(0), call)
     callWithTry = genForeignErrorCheck(callWithReturn)
   # generate type check
-  echo "gen type check"
   let typeCheck = genTypeChecks(ident"vm", isStatic, params)
-  echo wrenName, ": ", typeCheck.repr
   body.add(newIfStmt((cond: typeCheck, body: callWithTry))
            .add(newTree(nnkElse, genTypeError(theProc, wrenName,
                                               params.len, theProc))))
   result.body = body
-  echo "end ------"
 
 proc genSignature(theProc: NimNode, wrenName: string,
                   isStatic, isGetter: bool, namedParams = false): string =
