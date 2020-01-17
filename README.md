@@ -348,6 +348,44 @@ foo.more()
 System.print(foo.count)
 ```
 
+*Concrete* generic types are supported:
+
+```nim
+import strformat
+
+type
+  Vec2[T] = object
+    x*, y*: float
+
+proc vec2[T](x, y: T): T =
+  result = Vec2[T](x: x, y: y)
+
+proc `+`[T](a, b: Vec2[T]): Vec2[T] =
+  result = Vec2[T](x: a.x + b.x, y: a.y + b.y)
+
+proc `$`[T](a: Vec2[T]): string =
+  result = fmt"[{a.x} {a.y}]"
+
+wren.foreign("concrete_generic"):
+  # concrete generic types *must* be aliased
+  Vec2[float] -> Vec2f:
+    # you must fill any generic types on missing procs
+    # failing to do so will yield in a compile error, which is not caught
+    # by euwren (yet)
+    *vec2(float, float) -> new
+    `+`(Vec2[float], Vec2[float])
+    `$`(Vec2[float])
+```
+```js
+import "concrete_generic" for Vec2f
+
+var a = Vec2f.new(10, 10)
+var b = Vec2f.new(20, 30)
+var c = a + b
+
+System.print(c) // [30 40]
+```
+
 ### Binding enums
 
 ```nim
