@@ -570,7 +570,7 @@ proc isForeignType(typeSym: NimNode): bool =
     theType = theType[0]
   # XXX: this assumes that generic typedescs are proper foreign types
   result = theType.flattenType.typeKind in {ntyObject, ntyRef, ntyTuple,
-                                                ntyGenericBody}
+                                            ntyGenericBody}
 
 proc typeHash(typeSym: NimNode): string =
   ## Generate a type hash for a symbol. This is designed to work with generic
