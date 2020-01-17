@@ -369,7 +369,7 @@ proc `$`[T](a: Vec2[T]): string =
 wren.foreign("concrete_generic"):
   # concrete generic types *must* be aliased
   Vec2[float] -> Vec2f:
-    # you must fill any generic types on missing procs
+    # you must fill any generic types on procs
     # failing to do so will yield in a compile error, which is not caught
     # by euwren (yet)
     *vec2(float, float) -> new
